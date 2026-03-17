@@ -1,0 +1,22 @@
+[project]
+name = "repometa"
+version = "0.1.0"
+description = "A local Python repository metadata extractor."
+authors = [
+    {name = "Alger", email = "changalger@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "typer"
+]
+
+[project.scripts]
+repometa = "repometa.cli:app"
+
+[tool.poetry]
+packages = [{include = "repometa", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
