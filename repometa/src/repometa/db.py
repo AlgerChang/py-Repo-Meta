@@ -70,7 +70,7 @@ class RepoMetaDB:
             SELECT s.name, s.qualname, s.symbol_type, s.start_line, s.end_line, s.docstring
             FROM symbols s
             JOIN files f ON s.file_id = f.id
-            WHERE f.filepath = ?
+            WHERE f.filepath = ? OR f.filepath LIKE ?
             ORDER BY s.start_line
-        ''', (filepath,))
+        ''', (filepath, '%/' + filepath))
         return [dict(row) for row in cursor.fetchall()]

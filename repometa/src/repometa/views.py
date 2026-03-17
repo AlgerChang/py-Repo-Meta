@@ -1,6 +1,5 @@
 def format_file_focus(filepath: str, symbols: list[dict]) -> str:
-    lines = [f"# File: {filepath}
-"]
+    lines = [f"# File: {filepath}"]
     
     for symbol in symbols:
         sym_type = symbol['symbol_type']
@@ -22,6 +21,4 @@ def format_file_focus(filepath: str, symbols: list[dict]) -> str:
             lines.append("*No docstring provided.*")
         lines.append("")
         
-    return "
-".join(lines).strip() + "
-"
+    return '\n'.join(lines).strip() + '\n'

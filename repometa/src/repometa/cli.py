@@ -17,6 +17,9 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
     db.setup()
     db.clear_all()
     
+    # Resolve to absolute path to ensure relative_to works safely
+    abs_repo_path = repo_path.resolve()
+    
     processed_count = 0
     for filepath in repo_path.rglob("*.py"):
         # Ignore .venv and .repometa directories
@@ -25,8 +28,13 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
             
         symbols = parse_file(filepath)
         if symbols:
-            # Store filepath relative to repo_path
-            rel_path = str(filepath.relative_to(repo_path).as_posix())
+            # Store filepath strictly relative to repo_path with forward slashes
+            try:
+                rel_path = filepath.resolve().relative_to(abs_repo_path).as_posix()
+            except ValueError:
+                # Fallback if somehow not relative
+                rel_path = filepath.as_posix()
+                
             file_id = db.insert_file(rel_path)
             db.insert_symbols(file_id, symbols)
             processed_count += 1
@@ -36,21 +44,22 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
 @app.command()
 def export(
     view: str = typer.Argument(..., help="The view to export (e.g., 'file_focus')"),
-    target: str = typer.Argument(..., help="The relative filepath to export"),
+    target: str = typer.Option(..., "--target", help="The relative filepath to export"),
     repo_path: Path = typer.Option(Path("."), "--repo-path", help="Path to the repository")
 ):
     """
     Export metadata for a specific view and target as Markdown.
     """
     db = RepoMetaDB(repo_path)
+    target_posix = Path(target).as_posix()
     
     if view == "file_focus":
-        symbols = db.get_symbols_by_file(target)
+        symbols = db.get_symbols_by_file(target_posix)
         if not symbols:
-            typer.echo(f"No metadata found for target file: {target}", err=True)
+            typer.echo(f"No metadata found for target file: {target_posix}", err=True)
             raise typer.Exit(code=1)
             
-        markdown_output = format_file_focus(target, symbols)
+        markdown_output = format_file_focus(target_posix, symbols)
         typer.echo(markdown_output)
     else:
         typer.echo(f"Unsupported view: {view}", err=True)
