@@ -18,6 +18,7 @@ class RepoMetaDB:
                 filepath TEXT UNIQUE NOT NULL
             )
         ''')
+        # Dropped start_line and end_line for token optimization
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS symbols (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,8 +26,6 @@ class RepoMetaDB:
                 name TEXT,
                 qualname TEXT,
                 symbol_type TEXT,
-                start_line INTEGER,
-                end_line INTEGER,
                 docstring TEXT,
                 FOREIGN KEY(file_id) REFERENCES files(id)
             )
@@ -49,8 +48,8 @@ class RepoMetaDB:
         cursor = self.conn.cursor()
         query = '''
             INSERT INTO symbols 
-            (file_id, name, qualname, symbol_type, start_line, end_line, docstring)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (file_id, name, qualname, symbol_type, docstring)
+            VALUES (?, ?, ?, ?, ?)
         '''
         for sym in symbols:
             cursor.execute(query, (
@@ -58,19 +57,16 @@ class RepoMetaDB:
                 sym['name'],
                 sym['qualname'],
                 sym['symbol_type'],
-                sym['start_line'],
-                sym['end_line'],
-                sym['docstring']
+                sym.get('docstring')
             ))
         self.conn.commit()
 
     def get_symbols_by_file(self, filepath: str) -> list[dict]:
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT s.name, s.qualname, s.symbol_type, s.start_line, s.end_line, s.docstring
+            SELECT s.name, s.qualname, s.symbol_type, s.docstring
             FROM symbols s
             JOIN files f ON s.file_id = f.id
             WHERE f.filepath = ? OR f.filepath LIKE ?
-            ORDER BY s.start_line
         ''', (filepath, '%/' + filepath))
         return [dict(row) for row in cursor.fetchall()]
