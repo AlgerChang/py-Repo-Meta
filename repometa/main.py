@@ -1,18 +1,38 @@
-import json
-from dataclasses import asdict
-from src.prmg.core.parser import parse_python_file
+import os
+from pathlib import Path
+
+# Adjust python path if needed or run with python -m 
+from prmg.storage.storage import DatabaseManager
+from prmg.parser.ast_parser import ASTParser
+from prmg.core.scanner import RepoScanner
 
 def main():
-    target_file = "src/prmg/core/parser.py"
-    print(f"Parsing target file: {target_file}")
+    # Resolve the repository root directory (assuming main.py is in the root)
+    root_path = str(Path(__file__).parent.resolve())
+    db_path = os.path.join(root_path, "repometa.db")
     
-    # Parse the target file
-    metadata = parse_python_file(target_file)
+    print(f"Initializing PRMG on project: {root_path}")
     
-    # Convert dataclass to dictionary and print as pretty JSON
-    json_output = json.dumps(asdict(metadata), indent=4, ensure_ascii=False)
-    print("\n--- Metadata JSON ---")
-    print(json_output)
+    # 1. Initialize storage and Database
+    storage = DatabaseManager(db_path)
+    storage.create_tables()
+    print("Database tables initialized.")
+    
+    # 2. Initialize AST Parser
+    parser = ASTParser(project_root=root_path)
+    
+    # 3. Initialize the RepoScanner Orchestrator
+    scanner = RepoScanner(
+        root_path=root_path,
+        storage=storage,
+        parser=parser,
+        batch_size=100,  # Adjustable for testing
+        max_workers=os.cpu_count() or 4
+    )
+    
+    print("Starting incremental repository scan...")
+    scanner.run()
+    print("Scan completed successfully!")
 
 if __name__ == "__main__":
     main()
