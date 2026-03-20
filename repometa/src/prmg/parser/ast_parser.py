@@ -15,6 +15,10 @@ def _get_module_fqn(project_root: str, filepath: str) -> str:
         rel_path = pathlib.Path(filepath)
         
     parts = list(rel_path.parts)
+    # Strip common 'src' prefix for correct FQN matching
+    if parts and parts[0] == 'src':
+        parts = parts[1:]
+        
     if parts and parts[-1].endswith('.py'):
         if parts[-1] == '__init__.py':
             parts = parts[:-1]
