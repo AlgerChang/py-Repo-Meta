@@ -139,7 +139,9 @@ class _MetadataVisitor(ast.NodeVisitor):
         self.symbols.append(sym)
         self._push_namespace(self.module_fqn, 'module', sym_id)
         
-        self.generic_visit(node)
+        for child in getattr(node, 'body', []):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+                self.visit(child)
         
         self._pop_namespace()
 
@@ -178,7 +180,10 @@ class _MetadataVisitor(ast.NodeVisitor):
             except Exception:
                 pass
                 
-        self.generic_visit(node)
+        for child in getattr(node, 'body', []):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                self.visit(child)
+                
         self._pop_namespace()
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
@@ -231,7 +236,6 @@ class _MetadataVisitor(ast.NodeVisitor):
                 target_qualname=alias.name,
                 edge_type='imports'
             ))
-        self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
         current_id = self._namespace_stack[-1][2] if self._namespace_stack else 0
@@ -258,7 +262,6 @@ class _MetadataVisitor(ast.NodeVisitor):
                 target_qualname=target_qualname,
                 edge_type='imports'
             ))
-        self.generic_visit(node)
 
 
 class ASTParser(BaseParser):
