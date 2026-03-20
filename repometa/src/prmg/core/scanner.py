@@ -156,41 +156,50 @@ class RepoScanner:
             self._commit_batch(parsed_results)
 
     def _commit_batch(self, batch: List[Tuple[str, List[Symbol], List[Edge]]]):
-        for filepath, symbols, edges in batch:
-            file_hash = self._compute_hash(filepath)
-            last_modified = os.path.getmtime(filepath)
-            
-            # Force cleanup: Ensures that previously recorded symbols and edges 
-            # are fully deleted before re-inserting, specifically addressing 
-            # the edge case where an affected file's hash hasn't changed.
+        try:
             with self.storage.get_connection() as conn:
-                conn.execute("DELETE FROM files WHERE filepath = ?", (filepath,))
-                conn.commit()
-                
-            file_record = File(
-                filepath=filepath,
-                file_hash=file_hash,
-                last_modified=last_modified
-            )
-            file_id = self.storage.upsert_file(file_record)
-            
-            for sym in symbols:
-                sym.file_id = file_id
-                
-            # Maintain mapping between internal Parser ID to Database primary key ID
-            old_ids = {id(sym): sym.id for sym in symbols}
-            self.storage.insert_symbols(symbols)
-            old_to_new_id = {old_ids[id(sym)]: sym.id for sym in symbols}
-            
-            # Update edges with new source symbol DB IDs and extract imports
-            imports = set()
-            for edge in edges:
-                if edge.source_symbol_id in old_to_new_id:
-                    edge.source_symbol_id = old_to_new_id[edge.source_symbol_id]
-                if edge.edge_type == 'imports':
-                    imports.add(edge.target_qualname)
+                for filepath, symbols, edges in batch:
+                    file_hash = self._compute_hash(filepath)
+                    last_modified = os.path.getmtime(filepath)
                     
-            self.storage.insert_edges(edges)
-            
-            # Update dependencies in Tracker
-            self.tracker.update_relations(filepath, imports)
+                    # Force cleanup: Ensures that previously recorded symbols and edges 
+                    # are fully deleted before re-inserting, specifically addressing 
+                    # the edge case where an affected file's hash hasn't changed.
+                    conn.execute("DELETE FROM files WHERE filepath = ?", (filepath,))
+                        
+                    file_record = File(
+                        filepath=filepath,
+                        file_hash=file_hash,
+                        last_modified=last_modified
+                    )
+                    file_id = self.storage.upsert_file(file_record, conn=conn)
+                    
+                    for sym in symbols:
+                        sym.file_id = file_id
+                        
+                    # Maintain mapping between internal Parser ID to Database primary key ID
+                    old_ids = {id(sym): sym.id for sym in symbols}
+                    self.storage.insert_symbols(symbols, conn=conn)
+                    old_to_new_id = {old_ids[id(sym)]: sym.id for sym in symbols}
+                    
+                    # Update edges with new source symbol DB IDs and extract imports
+                    imports = set()
+                    for edge in edges:
+                        if edge.source_symbol_id in old_to_new_id:
+                            edge.source_symbol_id = old_to_new_id[edge.source_symbol_id]
+                        if edge.edge_type == 'imports':
+                            imports.add(edge.target_qualname)
+                            
+                    self.storage.insert_edges(edges, conn=conn)
+                    
+                    # Update dependencies in Tracker
+                    self.tracker.update_relations(filepath, imports)
+                
+                # Commit the entire batch atomically
+                conn.commit()
+        except Exception as e:
+            print(f"Failed to commit batch. Rolling back. Error: {e}")
+            # The context manager does not automatically rollback on exception in some Python versions 
+            # if we are doing explicit commits, so let's be explicit. But with sqlite3 context manager 
+            # it normally does rollback on exception. 
+            # We log the error. The caller should be aware.

@@ -67,14 +67,19 @@ class DatabaseManager:
             
             conn.commit()
 
-    def upsert_file(self, file: File) -> int:
+    def upsert_file(self, file: File, conn: sqlite3.Connection = None) -> int:
         """
         Insert a new file or update an existing one based on filepath.
         If the file exists but hash changed, delete it first to trigger
         ON DELETE CASCADE for old symbols and edges, preventing duplication.
         Returns the file ID.
         """
-        with self.get_connection() as conn:
+        managed_conn = False
+        if conn is None:
+            conn = self.get_connection()
+            managed_conn = True
+            
+        try:
             cursor = conn.cursor()
             
             # Check for existing file
@@ -90,7 +95,8 @@ class DatabaseManager:
                         (file.last_modified, existing_id)
                     )
                     file.id = existing_id
-                    conn.commit()
+                    if managed_conn:
+                        conn.commit()
                     return existing_id
                 else:
                     # Content changed, DELETE to trigger CASCADE for symbols and edges
@@ -106,11 +112,15 @@ class DatabaseManager:
             result = cursor.fetchone()
             if result:
                 file.id = result[0]
-                conn.commit()
+                if managed_conn:
+                    conn.commit()
                 return result[0]
             raise RuntimeError(f"Failed to upsert file: {file.filepath}")
+        finally:
+            if managed_conn:
+                conn.close()
 
-    def insert_symbols(self, symbols: List[Symbol]) -> List[int]:
+    def insert_symbols(self, symbols: List[Symbol], conn: sqlite3.Connection = None) -> List[int]:
         """
         Insert a list of symbols hierarchically to satisfy FK constraints.
         It resolves `parent_id` dynamically using `parent_qualname`.
@@ -124,7 +134,12 @@ class DatabaseManager:
         # In-memory mapping to keep track of generated IDs for children to reference
         qualname_to_id = {}
         
-        with self.get_connection() as conn:
+        managed_conn = False
+        if conn is None:
+            conn = self.get_connection()
+            managed_conn = True
+            
+        try:
             cursor = conn.cursor()
             for symbol in sorted_symbols:
                 # Dynamically resolve parent_id if a parent_qualname is provided
@@ -151,15 +166,28 @@ class DatabaseManager:
                     inserted_ids.append(result[0])
                     # Update mapping for subsequent children
                     qualname_to_id[symbol.qualname] = symbol.id
-            conn.commit()
-        return inserted_ids
+            if managed_conn:
+                conn.commit()
+            return inserted_ids
+        finally:
+            if managed_conn:
+                conn.close()
 
-    def insert_edges(self, edges: List[Edge]) -> None:
+    def insert_edges(self, edges: List[Edge], conn: sqlite3.Connection = None) -> None:
         """Insert a list of dependency/relationship edges."""
-        with self.get_connection() as conn:
+        managed_conn = False
+        if conn is None:
+            conn = self.get_connection()
+            managed_conn = True
+            
+        try:
             cursor = conn.cursor()
             cursor.executemany("""
                 INSERT OR IGNORE INTO edges (source_symbol_id, target_qualname, edge_type)
                 VALUES (?, ?, ?)
             """, [(e.source_symbol_id, e.target_qualname, e.edge_type) for e in edges])
-            conn.commit()
+            if managed_conn:
+                conn.commit()
+        finally:
+            if managed_conn:
+                conn.close()
