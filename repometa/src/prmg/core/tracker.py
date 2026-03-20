@@ -18,14 +18,24 @@ class DependencyTracker:
             ''')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_to_module ON dependencies(to_module)')
 
-    def update_relations(self, file_path: str, imports: Set[str]):
-        with sqlite3.connect(self.db_path) as conn:
+    def update_relations(self, file_path: str, imports: Set[str], conn: sqlite3.Connection = None):
+        managed_conn = False
+        if conn is None:
+            conn = sqlite3.connect(self.db_path)
+            managed_conn = True
+            
+        try:
             conn.execute('DELETE FROM dependencies WHERE from_path = ?', (file_path,))
             if imports:
                 conn.executemany(
                     'INSERT OR IGNORE INTO dependencies (from_path, to_module) VALUES (?, ?)',
                     [(file_path, imp) for imp in imports]
                 )
+            if managed_conn:
+                conn.commit()
+        finally:
+            if managed_conn:
+                conn.close()
 
     def get_dependents(self, file_path: str, project_root: str) -> Set[str]:
         module_fqn = self._get_module_fqn(project_root, file_path)

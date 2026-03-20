@@ -193,7 +193,7 @@ class RepoScanner:
                     self.storage.insert_edges(edges, conn=conn)
                     
                     # Update dependencies in Tracker
-                    self.tracker.update_relations(filepath, imports)
+                    self.tracker.update_relations(filepath, imports, conn=conn)
                 
                 # Commit the entire batch atomically
                 conn.commit()
