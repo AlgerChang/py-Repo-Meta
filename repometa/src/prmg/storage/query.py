@@ -70,10 +70,9 @@ class QueryEngine:
                 """, (module_sym['id'],))
                 imports = [row['target_qualname'] for row in cursor.fetchall()]
 
-            classes = []
+            class_dict = {}
             for c_sym in class_syms:
                 c_meta = json.loads(c_sym['metadata'] or '{}')
-                # Find bases
                 cursor.execute("""
                     SELECT target_qualname FROM edges 
                     WHERE source_symbol_id = ? AND edge_type = 'inherits'
@@ -85,13 +84,23 @@ class QueryEngine:
                     if m_sym['parent_id'] == c_sym['id']:
                         methods.append(self._build_function_meta(m_sym))
                         
-                classes.append(ClassMeta(
+                class_dict[c_sym['id']] = ClassMeta(
                     name=c_sym['name'],
                     bases=bases,
                     docstring=c_sym['docstring'],
                     methods=methods,
+                    nested_classes=[],
                     plugins=c_meta.get('plugins', {})
-                ))
+                )
+
+            top_level_classes = []
+            for c_sym in class_syms:
+                c_id = c_sym['id']
+                p_id = c_sym['parent_id']
+                if p_id in class_dict:
+                    class_dict[p_id].nested_classes.append(class_dict[c_id])
+                else:
+                    top_level_classes.append(class_dict[c_id])
                 
             functions = [self._build_function_meta(f_sym) for f_sym in func_syms]
             
@@ -101,7 +110,7 @@ class QueryEngine:
                 filepath=file_row['filepath'],
                 docstring=module_doc,
                 imports=imports,
-                classes=classes,
+                classes=top_level_classes,
                 functions=functions
             )
             

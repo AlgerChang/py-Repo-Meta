@@ -15,6 +15,7 @@ class ClassMeta:
     bases: List[str]
     docstring: Optional[str]
     methods: List[FunctionMeta]
+    nested_classes: List['ClassMeta'] = field(default_factory=list)
     plugins: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass

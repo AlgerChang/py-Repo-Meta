@@ -752,6 +752,13 @@ def _complex_pruning_target(a: int, b: int) -> int:
 
 # ========================================
 
+# File: D:\MyRepo\py-Repo-Meta\repometa\tests\fixtures\inherit_test.py
+
+class A(Exception):
+    ...
+
+# ========================================
+
 # File: D:\MyRepo\py-Repo-Meta\repometa\tests\test_parser.py
 
 os

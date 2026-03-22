@@ -30,7 +30,7 @@ def _get_module_fqn(project_root: str, filepath: str) -> str:
 
 
 class _MetadataVisitor(ast.NodeVisitor):
-    def __init__(self, module_fqn: str, filepath: str, plugin_manager: PluginManager, raw_ast: ast.AST):
+    def __init__(self, module_fqn: str, filepath: str, plugin_manager: PluginManager, raw_ast: ast.AST, include_private: bool = False):
         self.module_fqn = module_fqn
         self.filepath = filepath
         self.plugin_manager = plugin_manager
@@ -38,9 +38,17 @@ class _MetadataVisitor(ast.NodeVisitor):
         self.symbols: list[Symbol] = []
         self.edges: list[Edge] = []
         self.current_id = 0
+        self.include_private = include_private
         
         # 維護命名空間狀態: list of (name, type, symbol_id)
         self._namespace_stack: list[tuple[str, str, int]] = []
+
+    def _should_include(self, name: str) -> bool:
+        if self.include_private:
+            return True
+        if name.startswith("_") and name != "__init__":
+            return False
+        return True
 
     def _get_local_context(self) -> LocalContext:
         return LocalContext(
@@ -164,6 +172,9 @@ class _MetadataVisitor(ast.NodeVisitor):
         self._pop_namespace()
 
     def visit_ClassDef(self, node: ast.ClassDef):
+        if not self._should_include(node.name):
+            return
+            
         parent_qualname = self._get_parent_qualname()
         
         self.current_id += 1
@@ -214,6 +225,9 @@ class _MetadataVisitor(ast.NodeVisitor):
         self._handle_function(node, is_async=True)
 
     def _handle_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, is_async: bool):
+        if not self._should_include(node.name):
+            return
+            
         parent_qualname = self._get_parent_qualname()
         parent_type = self._namespace_stack[-1][1] if self._namespace_stack else 'module'
         sym_type = 'method' if parent_type == 'class' else 'function'
@@ -288,7 +302,20 @@ class _MetadataVisitor(ast.NodeVisitor):
             ))
 
 
+import tomllib
+
 class ASTParser(BaseParser):
+    def _load_config(self) -> dict:
+        pyproject_path = pathlib.Path(self.project_root) / "pyproject.toml"
+        if pyproject_path.exists():
+            try:
+                with open(pyproject_path, "rb") as f:
+                    data = tomllib.load(f)
+                return data.get("tool", {}).get("prmg", {})
+            except Exception:
+                pass
+        return {}
+
     def parse_file(self, filepath: str) -> tuple[list[Symbol], list[Edge]]:
         with open(filepath, 'r', encoding='utf-8') as f:
             source = f.read()
@@ -296,8 +323,11 @@ class ASTParser(BaseParser):
         tree = ast.parse(source, filename=filepath)
         module_fqn = _get_module_fqn(self.project_root, filepath)
         
+        config = self._load_config()
+        include_private = config.get("include_private", False)
+        
         plugin_manager = PluginManager(self.plugin_config)
-        visitor = _MetadataVisitor(module_fqn, filepath, plugin_manager, tree)
+        visitor = _MetadataVisitor(module_fqn, filepath, plugin_manager, tree, include_private=include_private)
         visitor.visit(tree)
         
         return visitor.symbols, visitor.edges

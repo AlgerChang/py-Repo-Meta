@@ -53,6 +53,10 @@ class PyiFormatter(BaseFormatter):
             lines.append(textwrap.indent(doc, doc_indent))
             has_body = True
             
+        for nested in cls.nested_classes:
+            lines.append(self.format_class(nested, indent_level + 1))
+            has_body = True
+            
         for method in cls.methods:
             lines.append(self.format_function(method, indent_level + 1))
             has_body = True
