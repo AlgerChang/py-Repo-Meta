@@ -71,13 +71,9 @@ class PluginManager:
         self._load_plugins_from_entry_points()
 
     def _load_plugins_from_entry_points(self) -> None:
-        """Discovers and loads plugins registered via importlib.metadata entry points."""
-        try:
-            # Python 3.10+ syntax
-            entry_points = importlib.metadata.entry_points(group='prmg.plugins')
-        except TypeError:
-            # Fallback for Python 3.9 and earlier
-            entry_points = importlib.metadata.entry_points().get('prmg.plugins', [])
+        """Discovers and loads plugins registered via importlib.metadata entry points.
+        Requires Python 3.10+ entry_points API."""
+        entry_points = importlib.metadata.entry_points(group='prmg.plugins')
 
         for ep in entry_points:
             try:
@@ -111,10 +107,16 @@ class PluginManager:
     def run_visit_node(self, node: ast.AST, context: LocalContext) -> Dict[str, Any]:
         """
         Executes visit_node on all registered plugins for a given AST node.
+        To ensure high performance, plugins are only evaluated for high-value nodes
+        (e.g., FunctionDef, AsyncFunctionDef, ClassDef).
         
         Returns:
             A dictionary containing namespaced metadata from plugins that returned data.
         """
+        # Restrict plugin evaluation to high-value nodes for performance
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return {}
+
         ext_metadata: Dict[str, Any] = {}
         for name, plugin in self.plugins.items():
             try:
@@ -123,7 +125,7 @@ class PluginManager:
                     # Namespace isolation: plugin output is keyed by plugin name
                     ext_metadata[name] = result
             except Exception as e:
-                # Exception isolation per plugin
+                # Exception isolation per plugin with full traceback logged
                 logger.error(f"Plugin '{name}' failed during visit_node: {e}", exc_info=True)
         return ext_metadata
 
