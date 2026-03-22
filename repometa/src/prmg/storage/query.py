@@ -31,7 +31,8 @@ class QueryEngine:
             name=sym_dict['name'],
             signature=sig,
             docstring=sym_dict['docstring'],
-            is_async=meta.get('is_async', False)
+            is_async=meta.get('is_async', False),
+            plugins=meta.get('plugins', {})
         )
 
     def get_module_meta(self, filepath: str) -> Optional[ModuleMeta]:
@@ -71,6 +72,7 @@ class QueryEngine:
 
             classes = []
             for c_sym in class_syms:
+                c_meta = json.loads(c_sym['metadata'] or '{}')
                 # Find bases
                 cursor.execute("""
                     SELECT target_qualname FROM edges 
@@ -87,7 +89,8 @@ class QueryEngine:
                     name=c_sym['name'],
                     bases=bases,
                     docstring=c_sym['docstring'],
-                    methods=methods
+                    methods=methods,
+                    plugins=c_meta.get('plugins', {})
                 ))
                 
             functions = [self._build_function_meta(f_sym) for f_sym in func_syms]

@@ -69,6 +69,14 @@ class PluginManager:
         self.config = config or {}
         self.plugins: Dict[str, BasePlugin] = {}
         self._load_plugins_from_entry_points()
+        self._load_plugins_from_config()
+
+    def _load_plugins_from_config(self) -> None:
+        for key, value in self.config.items():
+            if isinstance(value, str):
+                # Using the key as namespace, strip "prmg.plugins." prefix if present
+                name = key.replace("prmg.plugins.", "") if key.startswith("prmg.plugins.") else key
+                self.load_from_config_string(name, value)
 
     def _load_plugins_from_entry_points(self) -> None:
         """Discovers and loads plugins registered via importlib.metadata entry points.

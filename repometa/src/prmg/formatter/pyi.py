@@ -7,9 +7,16 @@ from prmg.models.ir import ClassMeta, FunctionMeta, ModuleMeta
 class PyiFormatter(BaseFormatter):
     def format_function(self, func: FunctionMeta, indent_level: int = 0) -> str:
         indent = " " * (4 * indent_level)
-        prefix = "async def " if func.is_async else "def "
-        
         lines = []
+        
+        if func.plugins:
+            for plugin_name, plugin_data in func.plugins.items():
+                if plugin_name == 'fastapi' and 'method' in plugin_data and 'path' in plugin_data:
+                    lines.append(f"{indent}@{plugin_name}({plugin_data['method']} '{plugin_data['path']}')")
+                else:
+                    lines.append(f"{indent}# @plugin:{plugin_name} {plugin_data}")
+                    
+        prefix = "async def " if func.is_async else "def "
         lines.append(f"{indent}{prefix}{func.name}{func.signature}:")
         
         doc_indent = " " * (4 * (indent_level + 1))

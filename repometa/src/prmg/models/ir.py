@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
 
 @dataclass
 class FunctionMeta:
@@ -7,6 +7,7 @@ class FunctionMeta:
     signature: str
     docstring: Optional[str]
     is_async: bool
+    plugins: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class ClassMeta:
@@ -14,6 +15,7 @@ class ClassMeta:
     bases: List[str]
     docstring: Optional[str]
     methods: List[FunctionMeta]
+    plugins: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class ModuleMeta:

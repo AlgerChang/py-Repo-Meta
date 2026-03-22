@@ -1,3 +1,10 @@
+# File: D:\MyRepo\py-Repo-Meta\repometa\check_db.py
+
+json
+sqlite3
+
+# ========================================
+
 # File: D:\MyRepo\py-Repo-Meta\repometa\main.py
 
 os
@@ -162,6 +169,8 @@ class PluginManager:
     and plugin outputs are correctly namespaced.
     """
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+        ...
+    def _load_plugins_from_config(self) -> None:
         ...
     def _load_plugins_from_entry_points(self) -> None:
         """
@@ -385,6 +394,9 @@ class PyiFormatter(BaseFormatter):
 # File: D:\MyRepo\py-Repo-Meta\repometa\src\prmg\models\ir.py
 
 dataclasses.dataclass
+dataclasses.field
+typing.Any
+typing.Dict
 typing.List
 typing.Optional
 
@@ -678,6 +690,36 @@ def parse_file(filepath: Path) -> list[dict]:
 # File: D:\MyRepo\py-Repo-Meta\repometa\src\repometa\views.py
 
 def format_file_focus(filepath: str, symbols: list[dict]) -> str:
+    ...
+
+# ========================================
+
+# File: D:\MyRepo\py-Repo-Meta\repometa\src\test_app.py
+
+pydantic.BaseModel
+typing.List
+typing.Optional
+
+class User(BaseModel):
+    """User data model."""
+
+class UserService:
+    """Business logic for User."""
+    def __init__(self, db_conn: str):
+        ...
+    def get_user_by_id(self, user_id: int) -> Optional[User]:
+        ...
+
+@fastapi(GET '/users/{user_id}')
+async def read_user(user_id: int, q: Optional[str] = None) -> User:
+    """
+    Fetch a user by ID.
+    Returns the user object if found.
+    """
+    ...
+
+@fastapi(POST '/users/')
+async def create_user(user: User) -> User:
     ...
 
 # ========================================
