@@ -1,8 +1,8 @@
 import textwrap
 from typing import Iterator
 
-from repometa.formatter.base import BaseFormatter
-from repometa.models.ir import ClassMeta, FunctionMeta, ModuleMeta
+from prmg.formatter.base import BaseFormatter
+from prmg.models.ir import ClassMeta, FunctionMeta, ModuleMeta
 
 class PyiFormatter(BaseFormatter):
     def format_function(self, func: FunctionMeta, indent_level: int = 0) -> str:

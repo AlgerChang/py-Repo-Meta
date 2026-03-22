@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from .base import BaseParser
 from prmg.storage.models import Symbol, Edge
+from prmg.core.extension import PluginManager, LocalContext
 
 def _get_module_fqn(project_root: str, filepath: str) -> str:
     root_path = pathlib.Path(project_root).resolve()
@@ -29,14 +30,24 @@ def _get_module_fqn(project_root: str, filepath: str) -> str:
 
 
 class _MetadataVisitor(ast.NodeVisitor):
-    def __init__(self, module_fqn: str):
+    def __init__(self, module_fqn: str, filepath: str, plugin_manager: PluginManager, raw_ast: ast.AST):
         self.module_fqn = module_fqn
+        self.filepath = filepath
+        self.plugin_manager = plugin_manager
+        self.raw_ast = raw_ast
         self.symbols: list[Symbol] = []
         self.edges: list[Edge] = []
         self.current_id = 0
         
         # 維護命名空間狀態: list of (name, type, symbol_id)
         self._namespace_stack: list[tuple[str, str, int]] = []
+
+    def _get_local_context(self) -> LocalContext:
+        return LocalContext(
+            file_path=self.filepath,
+            current_module_name=self.module_fqn,
+            raw_ast=self.raw_ast
+        )
         
     @property
     def current_qualname(self) -> str:
@@ -140,6 +151,9 @@ class _MetadataVisitor(ast.NodeVisitor):
             docstring=ast.get_docstring(node),
             metadata={}
         )
+        ext_meta = self.plugin_manager.run_visit_node(node, self._get_local_context())
+        if ext_meta:
+            sym.metadata["plugins"] = ext_meta
         self.symbols.append(sym)
         self._push_namespace(self.module_fqn, 'module', sym_id)
         
@@ -171,6 +185,9 @@ class _MetadataVisitor(ast.NodeVisitor):
             docstring=ast.get_docstring(node),
             metadata={}
         )
+        ext_meta = self.plugin_manager.run_visit_node(node, self._get_local_context())
+        if ext_meta:
+            sym.metadata["plugins"] = ext_meta
         self.symbols.append(sym)
         
         for base in node.bases:
@@ -224,6 +241,9 @@ class _MetadataVisitor(ast.NodeVisitor):
                 "returns": self._extract_return_type(node)
             }
         )
+        ext_meta = self.plugin_manager.run_visit_node(node, self._get_local_context())
+        if ext_meta:
+            sym.metadata["plugins"] = ext_meta
         self.symbols.append(sym)
         
         for child in node.body:
@@ -276,7 +296,8 @@ class ASTParser(BaseParser):
         tree = ast.parse(source, filename=filepath)
         module_fqn = _get_module_fqn(self.project_root, filepath)
         
-        visitor = _MetadataVisitor(module_fqn)
+        plugin_manager = PluginManager(self.plugin_config)
+        visitor = _MetadataVisitor(module_fqn, filepath, plugin_manager, tree)
         visitor.visit(tree)
         
         return visitor.symbols, visitor.edges

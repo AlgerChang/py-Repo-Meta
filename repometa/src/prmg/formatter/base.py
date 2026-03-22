@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Iterator
 
-from repometa.models.ir import ClassMeta, FunctionMeta, ModuleMeta
+from prmg.models.ir import ClassMeta, FunctionMeta, ModuleMeta
 
 class BaseFormatter(ABC):
     def __init__(self, include_docstrings: bool = True, optimize_tokens: bool = True) -> None:

@@ -10,11 +10,11 @@ from prmg.storage.storage import DatabaseManager
 from prmg.parser.base import BaseParser
 from prmg.core.tracker import DependencyTracker
 
-def _parse_task(filepath: str, parser_class, project_root: str) -> tuple[str, list[Symbol], list[Edge]]:
+def _parse_task(filepath: str, parser_class, project_root: str, plugin_config: dict = None) -> tuple[str, list[Symbol], list[Edge]]:
     """
     Top-level function for multiprocessing to avoid pickle issues with inner functions or lambdas.
     """
-    parser = parser_class(project_root)
+    parser = parser_class(project_root, plugin_config)
     symbols, edges = parser.parse_file(filepath)
     return filepath, symbols, edges
 
@@ -138,7 +138,7 @@ class RepoScanner:
         
         with concurrent.futures.ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             futures = [
-                executor.submit(_parse_task, filepath, parser_class, str(self.root_path))
+                executor.submit(_parse_task, filepath, parser_class, str(self.root_path), self.parser.plugin_config)
                 for filepath in to_parse_list
             ]
             for future in concurrent.futures.as_completed(futures):
