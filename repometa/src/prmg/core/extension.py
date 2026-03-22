@@ -107,16 +107,10 @@ class PluginManager:
     def run_visit_node(self, node: ast.AST, context: LocalContext) -> Dict[str, Any]:
         """
         Executes visit_node on all registered plugins for a given AST node.
-        To ensure high performance, plugins are only evaluated for high-value nodes
-        (e.g., FunctionDef, AsyncFunctionDef, ClassDef).
         
         Returns:
             A dictionary containing namespaced metadata from plugins that returned data.
         """
-        # Restrict plugin evaluation to high-value nodes for performance
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            return {}
-
         ext_metadata: Dict[str, Any] = {}
         for name, plugin in self.plugins.items():
             try:
