@@ -150,7 +150,7 @@ class DatabaseManager:
                 metadata_json = json.dumps(symbol.metadata) if symbol.metadata is not None else None
                 
                 cursor.execute("""
-                    INSERT INTO symbols (
+                    INSERT OR REPLACE INTO symbols (
                         file_id, parent_id, symbol_type, name, qualname,
                         docstring, metadata, line_start, line_end
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

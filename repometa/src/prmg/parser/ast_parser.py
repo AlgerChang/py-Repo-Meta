@@ -317,7 +317,7 @@ class ASTParser(BaseParser):
         return {}
 
     def parse_file(self, filepath: str) -> tuple[list[Symbol], list[Edge]]:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
             source = f.read()
             
         tree = ast.parse(source, filename=filepath)

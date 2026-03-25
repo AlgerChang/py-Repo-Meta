@@ -78,7 +78,8 @@ def export(
     
     if view == "all":
         output = formatter.generate_repository_context(query_engine.iter_all_modules())
-        typer.echo(output)
+        sys.stdout.buffer.write(output.encode('utf-8'))
+        sys.stdout.buffer.write(b'\n')
     elif view == "file_focus":
         if not target:
             typer.echo("Target file must be specified for 'file_focus' view.", err=True)
@@ -91,7 +92,8 @@ def export(
             raise typer.Exit(code=1)
             
         output = formatter.format_module(mod_meta)
-        typer.echo(output)
+        sys.stdout.buffer.write(output.encode('utf-8'))
+        sys.stdout.buffer.write(b'\n')
     else:
         typer.echo(f"Unsupported view: {view}", err=True)
         raise typer.Exit(code=1)
