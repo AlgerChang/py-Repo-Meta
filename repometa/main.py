@@ -1,5 +1,6 @@
 import os
 import sys
+import multiprocessing
 from pathlib import Path
 
 # Add parent directory's src to sys.path so modules can be found without installation
@@ -13,9 +14,19 @@ from prmg.storage.query import QueryEngine
 from prmg.formatter.pyi import PyiFormatter
 
 def main():
-    # Resolve the repository root directory (assuming main.py is in the root)
-    root_path = str(Path(__file__).parent.resolve())
-    db_path = os.path.join(root_path, "repometa.db")
+    # Resolve the repository root directory.
+    # When packaged with PyInstaller, __file__ points to a temporary _MEIPASS dir.
+    # Therefore, we use sys.argv or default to the current working directory.
+    args = sys.argv[1:]
+    if len(args) == 0:
+        root_path = os.getcwd()
+    else:
+        # Handles user args like: executable.exe build <path>
+        root_path = str(Path(args[-1]).resolve())
+        
+    db_dir = os.path.join(root_path, ".repometa")
+    os.makedirs(db_dir, exist_ok=True)
+    db_path = os.path.join(db_dir, "repometa.db")
     
     print(f"Initializing PRMG on project: {root_path}")
     
@@ -54,6 +65,7 @@ def main():
     global_context = GlobalContext(dependency_graph=scanner.tracker, global_symbol_table=storage)
     pm.run_after_indexing(global_context)
     print("Global Phase completed.")
+    print(f"Successfully built metadata in {db_path}")
 
     # 5. Output Layer
     print("Generating Pyi output...")
@@ -68,4 +80,5 @@ def main():
     print(f"Output generated successfully at {out_path}!")
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
