@@ -1,5 +1,6 @@
 import os
 import sys
+import multiprocessing
 import typer
 from pathlib import Path
 from typing import Optional
@@ -99,4 +100,5 @@ def export(
         raise typer.Exit(code=1)
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     app()
