@@ -18,6 +18,10 @@ class FunctionNode(BaseModel):
     is_async: bool
     decorators: list[str] = Field(default_factory=list)
     metadata_tags: dict[str, Any] = Field(default_factory=dict)
+    line_start: int | None = None
+    line_end: int | None = None
+    col_start: int | None = None
+    col_end: int | None = None
 
 
 class ClassNode(BaseModel):
@@ -27,6 +31,10 @@ class ClassNode(BaseModel):
     bases: list[str] = Field(default_factory=list)
     methods: list[FunctionNode] = Field(default_factory=list)
     metadata_tags: dict[str, Any] = Field(default_factory=dict)
+    line_start: int | None = None
+    line_end: int | None = None
+    col_start: int | None = None
+    col_end: int | None = None
 
 
 class ModuleNode(BaseModel):
@@ -192,7 +200,11 @@ class MetadataExtractor(ast.NodeVisitor):
             name=node.name,
             docstring=docstring,
             bases=bases,
-            methods=[]
+            methods=[],
+            line_start=node.lineno,
+            line_end=getattr(node, "end_lineno", node.lineno),
+            col_start=getattr(node, "col_offset", None),
+            col_end=getattr(node, "end_col_offset", None)
         )
         
         for plugin in self.plugins:
@@ -227,7 +239,11 @@ class MetadataExtractor(ast.NodeVisitor):
             args=args,
             return_type=return_type,
             is_async=is_async,
-            decorators=decorators
+            decorators=decorators,
+            line_start=node.lineno,
+            line_end=getattr(node, "end_lineno", node.lineno),
+            col_start=getattr(node, "col_offset", None),
+            col_end=getattr(node, "end_col_offset", None)
         )
 
         for plugin in self.plugins:
@@ -316,20 +332,32 @@ def parse_file(filepath: Path) -> list[dict]:
             'name': cls.name,
             'qualname': cls.name,
             'symbol_type': 'class',
-            'docstring': cls.docstring
+            'docstring': cls.docstring,
+            'line_start': cls.line_start,
+            'line_end': cls.line_end,
+            'col_start': cls.col_start,
+            'col_end': cls.col_end
         })
         for method in cls.methods:
             symbols.append({
                 'name': method.name,
                 'qualname': f"{cls.name}.{method.name}",
                 'symbol_type': 'async_function' if method.is_async else 'function',
-                'docstring': method.docstring
+                'docstring': method.docstring,
+                'line_start': method.line_start,
+                'line_end': method.line_end,
+                'col_start': method.col_start,
+                'col_end': method.col_end
             })
     for func in module.functions:
          symbols.append({
             'name': func.name,
             'qualname': func.name,
             'symbol_type': 'async_function' if func.is_async else 'function',
-            'docstring': func.docstring
+            'docstring': func.docstring,
+            'line_start': func.line_start,
+            'line_end': func.line_end,
+            'col_start': func.col_start,
+            'col_end': func.col_end
         })
     return symbols

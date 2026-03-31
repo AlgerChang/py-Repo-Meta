@@ -13,8 +13,14 @@ def format_file_focus(filepath: str, symbols: list[dict]) -> str:
             
         qualname = symbol['qualname']
         docstring = symbol.get('docstring')
+        line_start = symbol.get('line_start')
+        line_end = symbol.get('line_end')
         
-        lines.append(f"## `{prefix} {qualname}`")
+        span_str = ""
+        if line_start is not None and line_end is not None:
+            span_str = f" (L{line_start}-L{line_end})"
+            
+        lines.append(f"## `{prefix} {qualname}`{span_str}")
         if docstring:
             lines.append(f"{docstring}")
         else:
