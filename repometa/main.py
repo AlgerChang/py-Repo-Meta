@@ -13,17 +13,24 @@ from prmg.core.extension import PluginManager, GlobalContext
 from prmg.storage.query import QueryEngine
 from prmg.formatter.pyi import PyiFormatter
 
+import argparse
+
 def main():
-    # Resolve the repository root directory.
-    # When packaged with PyInstaller, __file__ points to a temporary _MEIPASS dir.
-    # Therefore, we use sys.argv or default to the current working directory.
-    args = sys.argv[1:]
-    if len(args) == 0:
-        root_path = os.getcwd()
+    parser_args = argparse.ArgumentParser(description="PRMG Repo Meta tool")
+    # To maintain compatibility with how the user uses it (e.g., export all --repo-path <path> --output-path <path>)
+    parser_args.add_argument("command", nargs="*", help="Command like 'export all'")
+    parser_args.add_argument("--repo-path", type=str, default=None, help="Path to the repository")
+    parser_args.add_argument("--output-path", type=str, default=None, help="Path to save the output file (directory and filename)")
+    
+    args = parser_args.parse_args()
+    
+    if args.repo_path:
+        root_path = str(Path(args.repo_path).resolve())
+    elif args.command and Path(args.command[-1]).exists():
+        root_path = str(Path(args.command[-1]).resolve())
     else:
-        # Handles user args like: executable.exe build <path>
-        root_path = str(Path(args[-1]).resolve())
-        
+        root_path = os.getcwd()
+
     db_dir = os.path.join(root_path, ".repometa")
     os.makedirs(db_dir, exist_ok=True)
     db_path = os.path.join(db_dir, "repometa.db")
@@ -74,7 +81,13 @@ def main():
     
     output = formatter.generate_repository_context(query_engine.iter_all_modules())
     
-    out_path = os.path.join(root_path, "output.pyi")
+    if hasattr(args, 'output_path') and args.output_path:
+        out_path = str(Path(args.output_path).resolve())
+        # Ensure parent directories exist
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    else:
+        out_path = os.path.join(root_path, "output.pyi")
+
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(output)
     print(f"Output generated successfully at {out_path}!")
