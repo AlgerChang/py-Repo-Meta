@@ -18,6 +18,9 @@ class JsonQueryEngine:
     def _dict_factory(self, cursor, row):
         return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
+    def _escape_like(self, value: str) -> str:
+        return value.replace("~", "~~").replace("%", "~%").replace("_", "~_")
+
     def _path_lookup_sql(self, paths: List[str]) -> tuple[str, List[str]]:
         clauses = []
         params = []
@@ -36,8 +39,8 @@ class JsonQueryEngine:
             clauses.append("REPLACE(filepath, '\\', '/') = ?")
             params.append(normalized)
             if not path.is_absolute():
-                clauses.append("REPLACE(filepath, '\\', '/') LIKE ?")
-                params.append(f"%/{normalized}")
+                clauses.append("REPLACE(filepath, '\\', '/') LIKE ? ESCAPE '~'")
+                params.append(f"%/{self._escape_like(normalized)}")
 
         exact_paths = list(dict.fromkeys(exact_paths))
         if exact_paths:
@@ -248,8 +251,16 @@ class JsonQueryEngine:
                     JOIN files f ON s.file_id = f.id
                     WHERE s.symbol_type IN ('class', 'function', 'method')
                     AND (s.name LIKE ? OR s.qualname LIKE ?)
+                    ORDER BY
+                        CASE
+                            WHEN s.name = ? THEN 0
+                            WHEN s.qualname = ? THEN 1
+                            ELSE 2
+                        END,
+                        s.qualname,
+                        s.id
                     LIMIT 50
-                """, (like_pattern, like_pattern))
+                """, (like_pattern, like_pattern, name, name))
                 
                 rows = cursor.fetchall()
                 for r in rows:
@@ -288,12 +299,14 @@ class JsonQueryEngine:
             placeholders = ",".join("?" for _ in names)
             params = list(names)
             type_placeholders = ",".join("?" for _ in symbol_types)
+            params.extend(names)
             params.extend(symbol_types)
             
             cursor.execute(f"""
                 SELECT s.*, f.filepath FROM symbols s
                 JOIN files f ON s.file_id = f.id
-                WHERE s.name IN ({placeholders}) AND s.symbol_type IN ({type_placeholders})
+                WHERE (s.name IN ({placeholders}) OR s.qualname IN ({placeholders}))
+                AND s.symbol_type IN ({type_placeholders})
             """, params)
             symbols.extend(cursor.fetchall())
             
