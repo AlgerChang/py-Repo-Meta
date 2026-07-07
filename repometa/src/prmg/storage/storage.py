@@ -60,10 +60,20 @@ class DatabaseManager:
                     FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
                 )
             """)
+
+            # dependencies table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS dependencies (
+                    from_path TEXT NOT NULL,
+                    to_module TEXT NOT NULL,
+                    PRIMARY KEY (from_path, to_module)
+                )
+            """)
             
             # Create indexes for better query performance on FK columns
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_parent_id ON symbols(parent_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_to_module ON dependencies(to_module);")
             
             conn.commit()
 

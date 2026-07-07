@@ -1,15 +1,53 @@
 import json
+from contextlib import contextmanager
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 class JsonQueryEngine:
     def __init__(self, db):
         self.db = db
 
+    @contextmanager
+    def _connection(self):
+        conn = self.db.get_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def _dict_factory(self, cursor, row):
         return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
+    def _path_lookup_sql(self, paths: List[str]) -> tuple[str, List[str]]:
+        clauses = []
+        params = []
+        exact_paths = []
+        for raw_path in paths:
+            path = Path(raw_path)
+            exact_paths.extend([raw_path, str(path)])
+            try:
+                exact_paths.append(str(path.resolve()))
+            except OSError:
+                pass
+
+            normalized = raw_path.replace("\\", "/")
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
+            clauses.append("REPLACE(filepath, '\\', '/') = ?")
+            params.append(normalized)
+            if not path.is_absolute():
+                clauses.append("REPLACE(filepath, '\\', '/') LIKE ?")
+                params.append(f"%/{normalized}")
+
+        exact_paths = list(dict.fromkeys(exact_paths))
+        if exact_paths:
+            placeholders = ",".join("?" for _ in exact_paths)
+            clauses.insert(0, f"filepath IN ({placeholders})")
+            params = exact_paths + params
+        return " OR ".join(clauses), params
+
     def get_overview(self) -> Dict[str, Any]:
-        with self.db.get_connection() as conn:
+        with self._connection() as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM files")
             files = c.fetchone()[0]
@@ -27,7 +65,7 @@ class JsonQueryEngine:
             }
 
     def get_schema(self) -> Dict[str, Any]:
-        with self.db.get_connection() as conn:
+        with self._connection() as conn:
             conn.row_factory = self._dict_factory
             c = conn.cursor()
             c.execute("SELECT name, sql FROM sqlite_master WHERE type='table'")
@@ -37,14 +75,27 @@ class JsonQueryEngine:
     def _get_file_ids(self, names: List[str], paths: List[str], ids: List[str], cursor) -> List[int]:
         file_ids = []
         if ids:
-            file_ids.extend([int(i) for i in ids])
+            module_ids = [int(i) for i in ids]
+            placeholders = ",".join("?" for _ in module_ids)
+            cursor.execute(
+                f"SELECT file_id FROM symbols WHERE symbol_type='module' AND id IN ({placeholders})",
+                module_ids,
+            )
+            file_ids.extend([row['file_id'] for row in cursor.fetchall()])
         if paths:
-            placeholders = ",".join("?" for _ in paths)
-            cursor.execute(f"SELECT id FROM files WHERE filepath IN ({placeholders})", paths)
+            where_sql, params = self._path_lookup_sql(paths)
+            cursor.execute(f"SELECT id FROM files WHERE {where_sql}", params)
             file_ids.extend([row['id'] for row in cursor.fetchall()])
         if names:
             placeholders = ",".join("?" for _ in names)
-            cursor.execute(f"SELECT file_id FROM symbols WHERE symbol_type='module' AND name IN ({placeholders})", names)
+            cursor.execute(
+                f"""
+                SELECT file_id FROM symbols
+                WHERE symbol_type='module'
+                AND (name IN ({placeholders}) OR qualname IN ({placeholders}))
+                """,
+                list(names) + list(names),
+            )
             file_ids.extend([row['file_id'] for row in cursor.fetchall()])
         return list(set(file_ids))
 
@@ -58,7 +109,7 @@ class JsonQueryEngine:
 
     def query_module(self, names: List[str], paths: List[str], ids: List[str]) -> List[Dict]:
         results = []
-        with self.db.get_connection() as conn:
+        with self._connection() as conn:
             conn.row_factory = self._dict_factory
             cursor = conn.cursor()
             file_ids = self._get_file_ids(names, paths, ids, cursor)
@@ -116,7 +167,7 @@ class JsonQueryEngine:
 
     def query_deps(self, names: List[str], paths: List[str], ids: List[str]) -> List[Dict]:
         results = []
-        with self.db.get_connection() as conn:
+        with self._connection() as conn:
             conn.row_factory = self._dict_factory
             cursor = conn.cursor()
             file_ids = self._get_file_ids(names, paths, ids, cursor)
@@ -137,7 +188,10 @@ class JsonQueryEngine:
                 depended_by = []
                 if m_row:
                     qualname = m_row['qualname']
-                    cursor.execute("SELECT from_path FROM dependencies WHERE to_module=?", (qualname,))
+                    cursor.execute(
+                        "SELECT from_path FROM dependencies WHERE to_module=? OR to_module LIKE ?",
+                        (qualname, f"{qualname}.%"),
+                    )
                     depended_by = [r['from_path'] for r in cursor.fetchall()]
                     
                 results.append({
@@ -150,7 +204,7 @@ class JsonQueryEngine:
 
     def query_imports(self, names: List[str], paths: List[str], ids: List[str]) -> List[Dict]:
         results = []
-        with self.db.get_connection() as conn:
+        with self._connection() as conn:
             conn.row_factory = self._dict_factory
             cursor = conn.cursor()
             file_ids = self._get_file_ids(names, paths, ids, cursor)
@@ -181,7 +235,8 @@ class JsonQueryEngine:
         if not names:
             return results
             
-        with self.db.get_connection() as conn:
+        seen = set()
+        with self._connection() as conn:
             conn.row_factory = self._dict_factory
             cursor = conn.cursor()
             
@@ -198,6 +253,9 @@ class JsonQueryEngine:
                 
                 rows = cursor.fetchall()
                 for r in rows:
+                    if r['id'] in seen:
+                        continue
+                    seen.add(r['id'])
                     results.append({
                         "id": r['id'],
                         "name": r['name'],
@@ -215,7 +273,7 @@ class JsonQueryEngine:
         # Helper to construct parameterized IN clauses
         if ids:
             placeholders = ",".join("?" for _ in ids)
-            params = list(ids)
+            params = [int(i) for i in ids]
             type_placeholders = ",".join("?" for _ in symbol_types)
             params.extend(symbol_types)
             
@@ -250,7 +308,7 @@ class JsonQueryEngine:
 
     def query_class(self, names: List[str], ids: List[str]) -> List[Dict]:
         results = []
-        with self.db.get_connection() as conn:
+        with self._connection() as conn:
             conn.row_factory = self._dict_factory
             cursor = conn.cursor()
             
@@ -283,7 +341,7 @@ class JsonQueryEngine:
 
     def query_function(self, names: List[str], ids: List[str]) -> List[Dict]:
         results = []
-        with self.db.get_connection() as conn:
+        with self._connection() as conn:
             conn.row_factory = self._dict_factory
             cursor = conn.cursor()
             

@@ -1,7 +1,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 import typer
 
 from prmg.storage.storage import DatabaseManager
@@ -28,6 +28,12 @@ def _validate_targets(names: Optional[List[str]], paths: Optional[List[str]], id
             typer.echo(json.dumps({"error": "Cannot provide more than 5 targets per query."}), err=True)
             raise typer.Exit(code=1)
 
+    if ids:
+        for value in ids:
+            if not value.isdigit():
+                typer.echo(json.dumps({"error": f"Invalid ID: '{value}'. IDs must be numeric."}), err=True)
+                raise typer.Exit(code=1)
+
 def _get_engine(db_path: Optional[str]) -> JsonQueryEngine:
     path = get_db_path(db_path)
     if not path.exists():
@@ -36,7 +42,8 @@ def _get_engine(db_path: Optional[str]) -> JsonQueryEngine:
     return JsonQueryEngine(DatabaseManager(str(path)))
 
 def _output(data: Any):
-    sys.stdout.write(json.dumps(data, indent=None, ensure_ascii=False) + "\n")
+    payload = json.dumps(data, indent=None, ensure_ascii=False).encode("utf-8") + b"\n"
+    sys.stdout.buffer.write(payload)
 
 @query_app.command("overview")
 def query_overview(db_path: Optional[str] = typer.Option(None, "--db-path", help="Path to database file")):
