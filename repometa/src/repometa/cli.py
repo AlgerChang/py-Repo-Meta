@@ -12,7 +12,10 @@ from prmg.core.extension import PluginManager, GlobalContext
 from prmg.storage.query import QueryEngine
 from prmg.formatter.pyi import PyiFormatter
 
+from repometa.query_cli import query_app
+
 app = typer.Typer(help="repometa: Python repository metadata extractor")
+app.add_typer(query_app, name="query")
 
 def get_db_path(repo_path: Path) -> Path:
     db_dir = repo_path / ".repometa"
