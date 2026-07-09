@@ -1,0 +1,16 @@
+{
+    "include": [
+        "repometa/src",
+        "repometa/tests"
+    ],
+    "exclude": [
+        ".venv",
+        "repometa/.venv",
+        "**/__pycache__"
+    ],
+    "venvPath": "repometa",
+    "venv": ".venv",
+    "extraPaths": [
+        "repometa/src"
+    ]
+}

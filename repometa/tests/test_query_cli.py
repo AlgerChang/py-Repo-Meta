@@ -41,6 +41,25 @@ def mock_db(tmp_path):
         c.execute("INSERT INTO dependencies (from_path, to_module) VALUES (?, 'pkg.mod.Widget')", (str(consumer_path),))
     return str(db_path)
 
+
+@pytest.fixture
+def export_repo(tmp_path):
+    repo_path = tmp_path / "repo"
+    db_dir = repo_path / ".repometa"
+    db_dir.mkdir(parents=True)
+    db = DatabaseManager(str(db_dir / "repometa.db"))
+    db.create_tables()
+
+    with db.get_connection() as conn:
+        c = conn.cursor()
+        c.execute("INSERT INTO files (id, filepath, file_hash, last_modified) VALUES (1, 'src/example.py', 'hash1', 123.0)")
+        c.execute("INSERT INTO symbols (id, file_id, symbol_type, name, qualname, line_start, line_end) VALUES (10, 1, 'module', 'example', 'example', 1, 10)")
+        c.execute("INSERT INTO symbols (id, file_id, parent_id, symbol_type, name, qualname, metadata, line_start, line_end) VALUES (11, 1, 10, 'function', 'run', 'example.run', '{}', 3, 4)")
+        c.execute("INSERT INTO edges (source_symbol_id, target_qualname, edge_type) VALUES (10, 'os', 'imports')")
+
+    return repo_path
+
+
 def test_query_overview(mock_db):
     result = runner.invoke(app, ["query", "overview", "--db-path", mock_db])
     assert result.exit_code == 0
@@ -228,3 +247,25 @@ def test_validation_invalid_id(mock_db):
     result = runner.invoke(app, ["query", "module", "--id", "abc", "--db-path", mock_db])
     assert result.exit_code == 1
     assert "IDs must be numeric" in result.output
+
+
+def test_export_all_writes_stdout_by_default(export_repo):
+    result = runner.invoke(app, ["export", "all", "--repo-path", str(export_repo)])
+
+    assert result.exit_code == 0
+    assert "# File: src/example.py" in result.stdout
+    assert "def run():" in result.stdout
+
+
+def test_export_all_writes_output_path(export_repo, tmp_path):
+    output_path = tmp_path / "nested" / "repo_meta.pyi"
+
+    result = runner.invoke(
+        app,
+        ["export", "all", "--repo-path", str(export_repo), "--output-path", str(output_path)],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == ""
+    assert output_path.read_text(encoding="utf-8").endswith("\n")
+    assert "def run():" in output_path.read_text(encoding="utf-8")

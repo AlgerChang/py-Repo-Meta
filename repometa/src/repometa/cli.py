@@ -17,10 +17,26 @@ from repometa.query_cli import query_app
 app = typer.Typer(help="repometa: Python repository metadata extractor")
 app.add_typer(query_app, name="query")
 
+
 def get_db_path(repo_path: Path) -> Path:
     db_dir = repo_path / ".repometa"
     db_dir.mkdir(parents=True, exist_ok=True)
     return db_dir / "repometa.db"
+
+
+def write_export_output(output: str, output_path: Optional[Path]) -> None:
+    output_with_newline = output + "\n"
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output_with_newline, encoding="utf-8")
+        return
+
+    stdout_buffer = getattr(sys.stdout, "buffer", None)
+    if stdout_buffer is not None:
+        stdout_buffer.write(output_with_newline.encode("utf-8"))
+    else:
+        sys.stdout.write(output_with_newline)
+
 
 @app.command()
 def build(repo_path: Path = typer.Argument(..., help="Path to the repository to parse")):
@@ -66,7 +82,8 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
 def export(
     view: str = typer.Argument(..., help="The view to export (e.g., 'all', 'file_focus')"),
     target: Optional[str] = typer.Option(None, "--target", help="The relative filepath to export for 'file_focus'"),
-    repo_path: Path = typer.Option(Path("."), "--repo-path", help="Path to the repository")
+    repo_path: Path = typer.Option(Path("."), "--repo-path", help="Path to the repository"),
+    output_path: Optional[Path] = typer.Option(None, "--output-path", help="Write export output to this file")
 ):
     """
     Export metadata using PRMG engine formatters.
@@ -82,8 +99,7 @@ def export(
     
     if view == "all":
         output = formatter.generate_repository_context(query_engine.iter_all_modules())
-        sys.stdout.buffer.write(output.encode('utf-8'))
-        sys.stdout.buffer.write(b'\n')
+        write_export_output(output, output_path)
     elif view == "file_focus":
         if not target:
             typer.echo("Target file must be specified for 'file_focus' view.", err=True)
@@ -96,8 +112,7 @@ def export(
             raise typer.Exit(code=1)
             
         output = formatter.format_module(mod_meta)
-        sys.stdout.buffer.write(output.encode('utf-8'))
-        sys.stdout.buffer.write(b'\n')
+        write_export_output(output, output_path)
     else:
         typer.echo(f"Unsupported view: {view}", err=True)
         raise typer.Exit(code=1)
