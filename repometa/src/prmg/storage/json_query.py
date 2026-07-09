@@ -110,6 +110,13 @@ class JsonQueryEngine:
         except json.JSONDecodeError:
             return {}
 
+    def _dependency_targets_for_module(self, qualname: str) -> List[str]:
+        targets = [qualname]
+        src_qualname = f"src.{qualname}"
+        if not qualname.startswith("src."):
+            targets.append(src_qualname)
+        return list(dict.fromkeys(targets))
+
     def query_module(self, names: List[str], paths: List[str], ids: List[str]) -> List[Dict]:
         results = []
         with self._connection() as conn:
@@ -191,11 +198,17 @@ class JsonQueryEngine:
                 depended_by = []
                 if m_row:
                     qualname = m_row['qualname']
+                    dependency_targets = self._dependency_targets_for_module(qualname)
+                    clauses = []
+                    params = []
+                    for target in dependency_targets:
+                        clauses.append("to_module=? OR to_module LIKE ?")
+                        params.extend([target, f"{target}.%"])
                     cursor.execute(
-                        "SELECT from_path FROM dependencies WHERE to_module=? OR to_module LIKE ?",
-                        (qualname, f"{qualname}.%"),
+                        f"SELECT from_path FROM dependencies WHERE {' OR '.join(clauses)}",
+                        params,
                     )
-                    depended_by = [r['from_path'] for r in cursor.fetchall()]
+                    depended_by = list(dict.fromkeys(r['from_path'] for r in cursor.fetchall()))
                     
                 results.append({
                     "filepath": filepath,

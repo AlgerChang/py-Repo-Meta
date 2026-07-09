@@ -16,6 +16,7 @@ def mock_db(tmp_path):
     db.create_tables()
     package_mod_path = tmp_path / "src" / "pkg" / "mod.py"
     consumer_path = tmp_path / "src" / "consumer.py"
+    src_prefix_consumer_path = tmp_path / "src" / "src_prefix_consumer.py"
     with db.get_connection() as conn:
         c = conn.cursor()
         c.execute("INSERT INTO files (id, filepath, file_hash, last_modified) VALUES (1, 'src/test_mod.py', 'hash1', 123.0)")
@@ -39,6 +40,7 @@ def mock_db(tmp_path):
         # Dependencies
         c.execute("INSERT INTO dependencies (from_path, to_module) VALUES ('src/test_mod.py', 'sys')")
         c.execute("INSERT INTO dependencies (from_path, to_module) VALUES (?, 'pkg.mod.Widget')", (str(consumer_path),))
+        c.execute("INSERT INTO dependencies (from_path, to_module) VALUES (?, 'src.pkg.mod.Widget')", (str(src_prefix_consumer_path),))
     return str(db_path)
 
 
@@ -119,6 +121,7 @@ def test_query_deps_reverse_matches_sub_symbol_imports(mock_db):
     data = json.loads(result.stdout)
     assert len(data) == 1
     assert any(path.endswith("src\\consumer.py") or path.endswith("src/consumer.py") for path in data[0]["depended_by"])
+    assert any(path.endswith("src\\src_prefix_consumer.py") or path.endswith("src/src_prefix_consumer.py") for path in data[0]["depended_by"])
 
 def test_query_imports(mock_db):
     result = runner.invoke(app, ["query", "imports", "--path", "src/test_mod.py", "--db-path", mock_db])
