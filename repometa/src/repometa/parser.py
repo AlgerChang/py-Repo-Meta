@@ -57,7 +57,7 @@ class ConfigLoader:
     
     def __init__(self, cwd: Path | str | None = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
-        self.include_private: bool = False
+        self.include_private: bool = True
         self.exclude_dirs: list[str] = []
         self.active_plugins: list[str] = []
         self._load_config()
@@ -73,7 +73,7 @@ class ConfigLoader:
                 data = tomllib.load(f)
             
             prmg_config = data.get("tool", {}).get("prmg", {})
-            self.include_private = prmg_config.get("include_private", False)
+            self.include_private = prmg_config.get("include_private", True)
             self.exclude_dirs = prmg_config.get("exclude_dirs", [])
             self.active_plugins = prmg_config.get("active_plugins", [])
         except Exception:

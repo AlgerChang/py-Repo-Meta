@@ -74,8 +74,41 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_parent_id ON symbols(parent_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_to_module ON dependencies(to_module);")
+
+            # Track semantic index settings that are not represented by a source
+            # file hash. Changing symbol visibility must trigger a full rebuild.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS index_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
             
             conn.commit()
+
+    def get_index_setting(self, key: str) -> str | None:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM index_metadata WHERE key = ?",
+                (key,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def set_index_setting(self, key: str, value: str) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO index_metadata (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+
+    def clear_index(self) -> None:
+        """Remove all derived records so the next scan reindexes every file."""
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM dependencies")
+            conn.execute("DELETE FROM files")
 
     def upsert_file(self, file: File, conn: sqlite3.Connection = None) -> int:
         """

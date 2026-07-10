@@ -30,7 +30,7 @@ def _get_module_fqn(project_root: str, filepath: str) -> str:
 
 
 class _MetadataVisitor(ast.NodeVisitor):
-    def __init__(self, module_fqn: str, filepath: str, plugin_manager: PluginManager, raw_ast: ast.AST, include_private: bool = False):
+    def __init__(self, module_fqn: str, filepath: str, plugin_manager: PluginManager, raw_ast: ast.AST, include_private: bool = True):
         self.module_fqn = module_fqn
         self.filepath = filepath
         self.plugin_manager = plugin_manager
@@ -316,6 +316,10 @@ class ASTParser(BaseParser):
                 pass
         return {}
 
+    def symbol_visibility(self) -> str:
+        config = self._load_config()
+        return "all" if config.get("include_private", True) else "public_only"
+
     def parse_file(self, filepath: str) -> tuple[list[Symbol], list[Edge]]:
         with open(filepath, 'r', encoding='utf-8-sig') as f:
             source = f.read()
@@ -324,7 +328,10 @@ class ASTParser(BaseParser):
         module_fqn = _get_module_fqn(self.project_root, filepath)
         
         config = self._load_config()
-        include_private = config.get("include_private", False)
+        # Navigation must be able to locate every defined symbol by default.
+        # A repository can explicitly opt into a public-only summary with
+        # ``[tool.prmg] include_private = false``.
+        include_private = config.get("include_private", True)
         
         plugin_manager = PluginManager(self.plugin_config)
         visitor = _MetadataVisitor(module_fqn, filepath, plugin_manager, tree, include_private=include_private)

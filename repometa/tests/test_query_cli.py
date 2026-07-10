@@ -228,6 +228,143 @@ def test_query_function_by_qualname(mock_db):
     assert len(data) == 1
     assert data[0]["name"] == "test_func"
 
+
+def test_build_indexes_private_module_function_for_navigation_queries(tmp_path):
+    repo_path = tmp_path / "private_symbols_repo"
+    module_path = repo_path / "src" / "pkg" / "module.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text(
+        '''def public_function():
+    pass
+
+
+def _private_function():
+    def nested_public_function():
+        pass
+
+    def _nested_private_function():
+        pass
+
+
+class PublicClass:
+    def _private_method(self):
+        pass
+
+    def __name_mangled_method(self):
+        pass
+''',
+        encoding="utf-8",
+    )
+
+    build_result = runner.invoke(app, ["build", str(repo_path)])
+    assert build_result.exit_code == 0, build_result.output
+
+    db_path = repo_path / ".repometa" / "repometa.db"
+    db = DatabaseManager(str(db_path))
+    with db.get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, qualname, symbol_type, line_start, line_end
+            FROM symbols
+            WHERE qualname = 'pkg.module._private_function'
+            """
+        ).fetchone()
+    assert row is not None
+    private_id = row[0]
+    assert row[1:] == ("_private_function", "pkg.module._private_function", "function", 5, 10)
+
+    find_result = runner.invoke(
+        app,
+        ["query", "find", "--name", "_private_function", "--db-path", str(db_path)],
+    )
+    assert find_result.exit_code == 0, find_result.output
+    find_data = json.loads(find_result.stdout)
+    assert find_data[0] == {
+        "id": private_id,
+        "name": "_private_function",
+        "qualname": "pkg.module._private_function",
+        "symbol_type": "function",
+        "filepath": str(module_path.resolve()),
+        "line_start": 5,
+        "line_end": 10,
+    }
+
+    function_by_short_name_result = runner.invoke(
+        app,
+        ["query", "function", "--name", "_private_function", "--db-path", str(db_path)],
+    )
+    assert function_by_short_name_result.exit_code == 0, function_by_short_name_result.output
+    assert json.loads(function_by_short_name_result.stdout)[0]["id"] == private_id
+
+    function_result = runner.invoke(
+        app,
+        ["query", "function", "--name", "pkg.module._private_function", "--db-path", str(db_path)],
+    )
+    assert function_result.exit_code == 0, function_result.output
+    function_data = json.loads(function_result.stdout)
+    assert len(function_data) == 1
+    assert function_data[0]["id"] == private_id
+    assert function_data[0]["qualname"] == "pkg.module._private_function"
+
+    function_by_id_result = runner.invoke(
+        app,
+        ["query", "function", "--id", str(private_id), "--db-path", str(db_path)],
+    )
+    assert function_by_id_result.exit_code == 0, function_by_id_result.output
+    assert json.loads(function_by_id_result.stdout)[0]["qualname"] == "pkg.module._private_function"
+
+    module_result = runner.invoke(
+        app,
+        ["query", "module", "--path", str(module_path), "--db-path", str(db_path)],
+    )
+    assert module_result.exit_code == 0, module_result.output
+    module_data = json.loads(module_result.stdout)
+    assert [function["qualname"] for function in module_data[0]["functions"]] == [
+        "pkg.module.public_function",
+        "pkg.module._private_function",
+        "pkg.module._private_function.nested_public_function",
+        "pkg.module._private_function._nested_private_function",
+        "pkg.module.PublicClass._private_method",
+        "pkg.module.PublicClass.__name_mangled_method",
+    ]
+
+
+def test_build_reindexes_legacy_database_when_symbol_visibility_is_unknown(tmp_path):
+    repo_path = tmp_path / "legacy_visibility_repo"
+    module_path = repo_path / "module.py"
+    repo_path.mkdir()
+    module_path.write_text("def _private_function():\n    pass\n", encoding="utf-8")
+    config_path = repo_path / "pyproject.toml"
+    config_path.write_text("[tool.prmg]\ninclude_private = false\n", encoding="utf-8")
+
+    public_only_build = runner.invoke(app, ["build", str(repo_path)])
+    assert public_only_build.exit_code == 0, public_only_build.output
+
+    db_path = repo_path / ".repometa" / "repometa.db"
+    db = DatabaseManager(str(db_path))
+    with db.get_connection() as conn:
+        private_count = conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE qualname = 'module._private_function'"
+        ).fetchone()[0]
+        conn.execute("DELETE FROM index_metadata")
+    assert private_count == 0
+
+    config_path.unlink()
+    upgraded_build = runner.invoke(app, ["build", str(repo_path)])
+    assert upgraded_build.exit_code == 0, upgraded_build.output
+    assert "Symbol visibility changed or is unknown; rebuilding the full index." in upgraded_build.output
+
+    with db.get_connection() as conn:
+        private_count = conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE qualname = 'module._private_function'"
+        ).fetchone()[0]
+        visibility = conn.execute(
+            "SELECT value FROM index_metadata WHERE key = 'symbol_visibility'"
+        ).fetchone()[0]
+    assert private_count == 1
+    assert visibility == "all"
+
+
 def test_validation_mutually_exclusive(mock_db):
     result = runner.invoke(app, ["query", "module", "--name", "test", "--id", "1", "--db-path", mock_db])
     assert result.exit_code == 1

@@ -50,6 +50,16 @@ Parse the Python files in a target repository and store the metadata in a `.repo
 poetry run repometa build /path/to/your/python/project
 ```
 
+Build indexes every defined class, function, and method—including names that
+start with `_`—so navigation queries can locate implementation symbols. To
+produce an explicit public-only summary instead, add this to the target
+repository's `pyproject.toml`:
+
+```toml
+[tool.prmg]
+include_private = false
+```
+
 **2. Export Metadata**
 
 Export the metadata using PRMG engine formatters (e.g., as `.pyi` files).
@@ -118,6 +128,15 @@ CLI 工具 `repometa` 可以讓您建置 metadata database 並輸出指定的 vi
 ```bash
 # 請在 repometa/ 目錄下執行
 poetry run repometa build /path/to/your/python/project
+```
+
+Build 預設會索引所有已定義的 class、function 與 method（包含 `_` 開頭的名稱），
+讓導航查詢可以定位實作符號。若需要明確的僅公開 API 摘要，請在目標 repository 的
+`pyproject.toml` 加入：
+
+```toml
+[tool.prmg]
+include_private = false
 ```
 
 **2. Export Metadata (輸出元資料)**

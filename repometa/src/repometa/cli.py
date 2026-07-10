@@ -56,6 +56,10 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
     }
     
     parser = ASTParser(project_root=abs_repo_path, plugin_config=plugin_config)
+    symbol_visibility = parser.symbol_visibility()
+    if storage.get_index_setting("symbol_visibility") != symbol_visibility:
+        typer.echo("Symbol visibility changed or is unknown; rebuilding the full index.")
+        storage.clear_index()
     
     scanner = RepoScanner(
         root_path=abs_repo_path,
@@ -75,6 +79,7 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
     
     global_context = GlobalContext(dependency_graph=scanner.tracker, global_symbol_table=storage)
     pm.run_after_indexing(global_context)
+    storage.set_index_setting("symbol_visibility", symbol_visibility)
     typer.echo("Global Phase completed.")
     typer.echo(f"Successfully built metadata in {db_path}")
 

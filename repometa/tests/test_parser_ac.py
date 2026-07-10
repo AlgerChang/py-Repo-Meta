@@ -93,8 +93,9 @@ def broken_func(:
 # =========================================================================
 def test_configuration_private_filtering():
     """
-    Verify that public and private functions/classes are filtered correctly based
-    on the `include_private` configuration. `__init__` should always be included.
+    Verify that navigation includes public and private functions/classes by
+    default, while an explicit `include_private = false` creates a public-only
+    summary. `__init__` should always be included.
     """
     mock_code = '''
 class MyClass:
@@ -118,14 +119,14 @@ def _my_func():
         code_file = temp_dir_path / "mock_file.py"
         code_file.write_text(mock_code, encoding="utf-8")
         
-        # Assert 1: Default config (include_private=False)
+        # Assert 1: Default navigation config includes all defined symbols.
         config_default = ConfigLoader(cwd=temp_dir_path)
         parser_default = RepositoryParser(config=config_default)
         module_default = parser_default.parse_file(str(code_file))
         
         assert module_default.parse_status == "SUCCESS"
-        assert len(module_default.functions) == 1
-        assert module_default.functions[0].name == "my_func"  # _my_func is excluded
+        assert len(module_default.functions) == 2
+        assert {function.name for function in module_default.functions} == {"my_func", "_my_func"}
         
         assert len(module_default.classes) == 1
         cls_default = module_default.classes[0]
@@ -133,26 +134,26 @@ def _my_func():
         method_names = [m.name for m in cls_default.methods]
         assert "__init__" in method_names
         assert "public_method" in method_names
-        assert "_private_method" not in method_names
+        assert "_private_method" in method_names
         
-        # Assert 2: Mocked config (include_private=True)
+        # Assert 2: An explicit false value requests a public-only summary.
         pyproject_file = temp_dir_path / "pyproject.toml"
         pyproject_file.write_text('''[tool.prmg]
-include_private = true
+include_private = false
 ''', encoding="utf-8")
         
-        config_private = ConfigLoader(cwd=temp_dir_path)
-        parser_private = RepositoryParser(config=config_private)
-        module_private = parser_private.parse_file(str(code_file))
+        config_public_only = ConfigLoader(cwd=temp_dir_path)
+        parser_public_only = RepositoryParser(config=config_public_only)
+        module_public_only = parser_public_only.parse_file(str(code_file))
         
-        assert len(module_private.functions) == 2
-        func_names = [f.name for f in module_private.functions]
-        assert "my_func" in func_names
-        assert "_my_func" in func_names
+        assert len(module_public_only.functions) == 1
+        assert module_public_only.functions[0].name == "my_func"
         
-        cls_private = module_private.classes[0]
-        method_names_private = [m.name for m in cls_private.methods]
-        assert "_private_method" in method_names_private
+        cls_public_only = module_public_only.classes[0]
+        method_names_public_only = [m.name for m in cls_public_only.methods]
+        assert "__init__" in method_names_public_only
+        assert "public_method" in method_names_public_only
+        assert "_private_method" not in method_names_public_only
 
 
 # =========================================================================
