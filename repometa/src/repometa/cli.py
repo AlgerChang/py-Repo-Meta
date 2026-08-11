@@ -17,6 +17,8 @@ from repometa.query_cli import query_app
 app = typer.Typer(help="repometa: Python repository metadata extractor")
 app.add_typer(query_app, name="query")
 
+CONSUMER_INDEX_VERSION = "1"
+
 
 def get_db_path(repo_path: Path) -> Path:
     db_dir = repo_path / ".repometa"
@@ -57,8 +59,17 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
     
     parser = ASTParser(project_root=abs_repo_path, plugin_config=plugin_config)
     symbol_visibility = parser.symbol_visibility()
-    if storage.get_index_setting("symbol_visibility") != symbol_visibility:
-        typer.echo("Symbol visibility changed or is unknown; rebuilding the full index.")
+    visibility_requires_rebuild = (
+        storage.get_index_setting("symbol_visibility") != symbol_visibility
+    )
+    consumers_require_rebuild = (
+        storage.get_index_setting("consumer_index_version") != CONSUMER_INDEX_VERSION
+    )
+    if visibility_requires_rebuild or consumers_require_rebuild:
+        if visibility_requires_rebuild:
+            typer.echo("Symbol visibility changed or is unknown; rebuilding the full index.")
+        else:
+            typer.echo("Consumer index changed or is unknown; rebuilding the full index.")
         storage.clear_index()
     
     scanner = RepoScanner(
@@ -80,6 +91,7 @@ def build(repo_path: Path = typer.Argument(..., help="Path to the repository to 
     global_context = GlobalContext(dependency_graph=scanner.tracker, global_symbol_table=storage)
     pm.run_after_indexing(global_context)
     storage.set_index_setting("symbol_visibility", symbol_visibility)
+    storage.set_index_setting("consumer_index_version", CONSUMER_INDEX_VERSION)
     typer.echo("Global Phase completed.")
     typer.echo(f"Successfully built metadata in {db_path}")
 

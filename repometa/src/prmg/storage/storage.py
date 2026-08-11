@@ -1,8 +1,8 @@
 import json
 import sqlite3
-from typing import List
+from typing import List, Sequence
 
-from .models import Edge, File, Symbol
+from .models import ConsumerReference, Edge, File, Symbol
 
 class DatabaseManager:
     def __init__(self, db_path: str):
@@ -69,11 +69,42 @@ class DatabaseManager:
                     PRIMARY KEY (from_path, to_module)
                 )
             """)
+
+            # Occurrence-level reverse edges used by `query consumers`.
+            # This is intentionally separate from `edges`: the latter is a
+            # deduplicated structural graph and cannot retain source locations.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS consumer_edges (
+                    id INTEGER PRIMARY KEY,
+                    source_path TEXT NOT NULL,
+                    source_symbol_qualname TEXT NOT NULL,
+                    target_qualname TEXT NOT NULL,
+                    target_symbol_id INTEGER,
+                    base_edge_kind TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    col_start INTEGER NOT NULL,
+                    raw_reference TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    resolution TEXT NOT NULL DEFAULT 'unresolved',
+                    UNIQUE (
+                        source_path,
+                        source_symbol_qualname,
+                        target_qualname,
+                        base_edge_kind,
+                        line_start,
+                        col_start,
+                        origin
+                    )
+                )
+            """)
             
             # Create indexes for better query performance on FK columns
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_parent_id ON symbols(parent_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_to_module ON dependencies(to_module);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_consumer_target ON consumer_edges(target_qualname);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_consumer_target_symbol ON consumer_edges(target_symbol_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_consumer_source_path ON consumer_edges(source_path);")
 
             # Track semantic index settings that are not represented by a source
             # file hash. Changing symbol visibility must trigger a full rebuild.
@@ -107,8 +138,178 @@ class DatabaseManager:
     def clear_index(self) -> None:
         """Remove all derived records so the next scan reindexes every file."""
         with self.get_connection() as conn:
+            conn.execute("DELETE FROM consumer_edges")
             conn.execute("DELETE FROM dependencies")
             conn.execute("DELETE FROM files")
+
+    def delete_consumer_references(
+        self,
+        source_path: str,
+        *,
+        origin: str | None = None,
+        conn: sqlite3.Connection = None,
+    ) -> None:
+        managed_conn = False
+        if conn is None:
+            conn = self.get_connection()
+            managed_conn = True
+
+        try:
+            if origin is None:
+                conn.execute(
+                    "DELETE FROM consumer_edges WHERE source_path = ?",
+                    (source_path,),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM consumer_edges WHERE source_path = ? AND origin = ?",
+                    (source_path, origin),
+                )
+            if managed_conn:
+                conn.commit()
+        finally:
+            if managed_conn:
+                conn.close()
+
+    def replace_consumer_references(
+        self,
+        source_path: str,
+        references: Sequence[ConsumerReference],
+        *,
+        origin: str,
+        conn: sqlite3.Connection = None,
+    ) -> None:
+        managed_conn = False
+        if conn is None:
+            conn = self.get_connection()
+            managed_conn = True
+
+        try:
+            conn.execute(
+                "DELETE FROM consumer_edges WHERE source_path = ? AND origin = ?",
+                (source_path, origin),
+            )
+            if references:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO consumer_edges (
+                        source_path,
+                        source_symbol_qualname,
+                        target_qualname,
+                        base_edge_kind,
+                        line_start,
+                        col_start,
+                        raw_reference,
+                        origin,
+                        resolution
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unresolved')
+                    """,
+                    [
+                        (
+                            reference.source_path,
+                            reference.source_symbol_qualname,
+                            reference.target_qualname,
+                            reference.base_edge_kind,
+                            reference.line_start,
+                            reference.col_start,
+                            reference.raw_reference,
+                            origin,
+                        )
+                        for reference in references
+                    ],
+                )
+            if managed_conn:
+                conn.commit()
+        finally:
+            if managed_conn:
+                conn.close()
+
+    def replace_origin_consumer_references(
+        self,
+        references: Sequence[ConsumerReference],
+        *,
+        origin: str,
+    ) -> None:
+        """Replace every reference produced by a full-repository origin scan."""
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM consumer_edges WHERE origin = ?", (origin,))
+            if references:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO consumer_edges (
+                        source_path,
+                        source_symbol_qualname,
+                        target_qualname,
+                        base_edge_kind,
+                        line_start,
+                        col_start,
+                        raw_reference,
+                        origin,
+                        resolution
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unresolved')
+                    """,
+                    [
+                        (
+                            reference.source_path,
+                            reference.source_symbol_qualname,
+                            reference.target_qualname,
+                            reference.base_edge_kind,
+                            reference.line_start,
+                            reference.col_start,
+                            reference.raw_reference,
+                            origin,
+                        )
+                        for reference in references
+                    ],
+                )
+
+    def resolve_consumer_references(self) -> None:
+        """Resolve raw qualnames strictly against symbols in the current index."""
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE consumer_edges
+                SET target_symbol_id = NULL,
+                    resolution = 'unresolved'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE consumer_edges
+                SET target_symbol_id = (
+                        SELECT symbols.id
+                        FROM symbols
+                        WHERE symbols.qualname = consumer_edges.target_qualname
+                    ),
+                    resolution = 'resolved'
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM symbols
+                    WHERE symbols.qualname = consumer_edges.target_qualname
+                )
+                """
+            )
+            # Preserve compatibility with repositories that explicitly import
+            # through a `src.` package prefix while indexing strips that prefix.
+            conn.execute(
+                """
+                UPDATE consumer_edges
+                SET target_qualname = substr(target_qualname, 5),
+                    target_symbol_id = (
+                        SELECT symbols.id
+                        FROM symbols
+                        WHERE symbols.qualname = substr(consumer_edges.target_qualname, 5)
+                    ),
+                    resolution = 'resolved'
+                WHERE resolution = 'unresolved'
+                  AND target_qualname LIKE 'src.%'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM symbols
+                      WHERE symbols.qualname = substr(consumer_edges.target_qualname, 5)
+                  )
+                """
+            )
 
     def upsert_file(self, file: File, conn: sqlite3.Connection = None) -> int:
         """

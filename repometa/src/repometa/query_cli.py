@@ -118,3 +118,32 @@ def query_function(
     _validate_targets(name, [], id)
     engine = _get_engine(db_path)
     _output(engine.query_function(name or [], id or []))
+
+
+@query_app.command("consumers")
+def query_consumers(
+    symbol: Optional[str] = typer.Argument(
+        None,
+        help="Exact symbol qualname or an unambiguous short name",
+    ),
+    name: Optional[List[str]] = typer.Option(None, "--name"),
+    id: Optional[List[str]] = typer.Option(None, "--id"),
+    db_path: Optional[str] = typer.Option(None, "--db-path"),
+):
+    if symbol is not None and (name or id):
+        typer.echo(
+            json.dumps(
+                {
+                    "error": (
+                        "The positional symbol cannot be combined with --name or --id."
+                    )
+                }
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    names = [symbol] if symbol is not None else (name or [])
+    _validate_targets(names, [], id)
+    engine = _get_engine(db_path)
+    _output(engine.query_consumers(names, id or []))
