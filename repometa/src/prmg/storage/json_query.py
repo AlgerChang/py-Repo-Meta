@@ -566,3 +566,15 @@ class JsonQueryEngine:
                     }
                 )
         return results
+
+    def query_callers(self, names: List[str], ids: List[str]) -> List[Dict]:
+        results = self.query_consumers(names, ids)
+        for result in results:
+            consumers = result.pop("consumers", None)
+            if consumers is not None:
+                result["callers"] = [
+                    consumer
+                    for consumer in consumers
+                    if consumer["base_edge_kind"] == "call"
+                ]
+        return results

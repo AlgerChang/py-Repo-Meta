@@ -531,6 +531,32 @@ jobs:
     assert all(consumer["resolution"] == "resolved" for consumer in function_consumers)
     assert all(consumer["direct"] is True for consumer in function_consumers)
 
+    callers_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.target_function",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert callers_result.exit_code == 0, callers_result.output
+    callers_payload = json.loads(callers_result.stdout)
+    assert callers_payload[0]["target"] == function_payload[0]["target"]
+    callers = callers_payload[0]["callers"]
+    assert {caller["edge_kind"] for caller in callers} == {
+        "call",
+        "test_call",
+        "smoke_call",
+    }
+    assert all(caller["base_edge_kind"] == "call" for caller in callers)
+    assert {caller["source_symbol"] for caller in callers} == {
+        "pkg.consumer.production_entry",
+        "tests.test_target.test_target_function",
+        "tools.ci_target_smoke.main",
+    }
+
     data_result = runner.invoke(
         app,
         [
@@ -595,6 +621,24 @@ jobs:
     }
     assert str(local_ci_path.resolve()) in command_paths
     assert str(workflow_path.resolve()) in command_paths
+
+    module_callers_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert module_callers_result.exit_code == 0, module_callers_result.output
+    module_callers = json.loads(module_callers_result.stdout)[0]["callers"]
+    assert module_callers
+    assert all(caller["base_edge_kind"] == "call" for caller in module_callers)
+    assert not {str(local_ci_path.resolve()), str(workflow_path.resolve())} & {
+        caller["path"] for caller in module_callers
+    }
 
     consumer_path.write_text(
         "from pkg.target import target_function\n",
