@@ -27,3 +27,18 @@ class Edge:
     source_symbol_id: int
     target_qualname: str
     edge_type: str
+    line_start: Optional[int] = None
+    col_start: Optional[int] = None
+    raw_reference: Optional[str] = None
+
+
+@dataclass
+class ConsumerReference:
+    source_path: str
+    source_symbol_qualname: str
+    target_qualname: str
+    base_edge_kind: str
+    line_start: int
+    col_start: int
+    raw_reference: str
+    origin: str = "python_ast"

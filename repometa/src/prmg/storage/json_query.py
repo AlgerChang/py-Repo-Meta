@@ -3,6 +3,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from prmg.core.consumer_roles import classify_consumer_role, display_edge_kind
+
 class JsonQueryEngine:
     def __init__(self, db):
         self.db = db
@@ -389,4 +391,190 @@ class JsonQueryEngine:
                     "is_async": meta.get('is_async', False),
                     "plugins": meta.get('plugins', {})
                 })
+        return results
+
+    def _consumer_target_payload(self, symbol: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": symbol["id"],
+            "name": symbol["name"],
+            "qualname": symbol["qualname"],
+            "symbol_type": symbol["symbol_type"],
+            "filepath": symbol["filepath"],
+            "line_start": symbol["line_start"],
+            "line_end": symbol["line_end"],
+        }
+
+    def _consumer_relative_path(self, source_path: str) -> str:
+        source = Path(source_path)
+        db_path = Path(self.db.db_path).resolve()
+        if db_path.parent.name == ".repometa":
+            try:
+                return source.resolve().relative_to(db_path.parent.parent).as_posix()
+            except ValueError:
+                pass
+        return str(source)
+
+    def _consumer_role(self, source_path: str) -> str:
+        return classify_consumer_role(self._consumer_relative_path(source_path))
+
+    def _consumer_targets_by_name(self, name: str, cursor) -> tuple[List[Dict], Optional[str]]:
+        cursor.execute(
+            """
+            SELECT s.*, f.filepath
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            WHERE s.qualname = ?
+            """,
+            (name,),
+        )
+        exact = cursor.fetchall()
+        if exact:
+            return exact, None
+
+        cursor.execute(
+            """
+            SELECT s.*, f.filepath
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            WHERE s.name = ?
+            ORDER BY s.qualname
+            """,
+            (name,),
+        )
+        matches = cursor.fetchall()
+        if len(matches) > 1:
+            return matches, "ambiguous_target"
+        if not matches:
+            return [], "target_not_found"
+        return matches, None
+
+    def _consumer_target_by_id(self, symbol_id: str, cursor) -> tuple[List[Dict], Optional[str]]:
+        cursor.execute(
+            """
+            SELECT s.*, f.filepath
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            WHERE s.id = ?
+            """,
+            (int(symbol_id),),
+        )
+        match = cursor.fetchone()
+        if not match:
+            return [], "target_not_found"
+        return [match], None
+
+    def _consumers_for_target(self, target: Dict[str, Any], cursor) -> List[Dict]:
+        if target["symbol_type"] == "module":
+            escaped = self._escape_like(target["qualname"])
+            cursor.execute(
+                """
+                SELECT ce.*, matched.qualname AS matched_target_qualname,
+                       matched.symbol_type AS matched_target_symbol_type
+                FROM consumer_edges ce
+                JOIN symbols matched ON matched.id = ce.target_symbol_id
+                WHERE ce.resolution = 'resolved'
+                  AND (
+                      ce.target_symbol_id = ?
+                      OR ce.target_qualname LIKE ? ESCAPE '~'
+                  )
+                ORDER BY ce.source_path, ce.line_start, ce.col_start, ce.base_edge_kind
+                """,
+                (target["id"], f"{escaped}.%"),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT ce.*, matched.qualname AS matched_target_qualname,
+                       matched.symbol_type AS matched_target_symbol_type
+                FROM consumer_edges ce
+                JOIN symbols matched ON matched.id = ce.target_symbol_id
+                WHERE ce.resolution = 'resolved'
+                  AND ce.target_symbol_id = ?
+                ORDER BY ce.source_path, ce.line_start, ce.col_start, ce.base_edge_kind
+                """,
+                (target["id"],),
+            )
+
+        consumers = []
+        for row in cursor.fetchall():
+            role = self._consumer_role(row["source_path"])
+            consumers.append(
+                {
+                    "path": row["source_path"],
+                    "relative_path": self._consumer_relative_path(row["source_path"]),
+                    "source_symbol": row["source_symbol_qualname"] or None,
+                    "edge_kind": display_edge_kind(
+                        row["base_edge_kind"],
+                        role,
+                        row["matched_target_symbol_type"],
+                    ),
+                    "base_edge_kind": row["base_edge_kind"],
+                    "consumer_role": role,
+                    "line_start": row["line_start"],
+                    "col_start": row["col_start"],
+                    "matched_target_qualname": row["matched_target_qualname"],
+                    "raw_reference": row["raw_reference"],
+                    "resolution": row["resolution"],
+                    "origin": row["origin"],
+                    "direct": True,
+                }
+            )
+        return consumers
+
+    def query_consumers(self, names: List[str], ids: List[str]) -> List[Dict]:
+        results: List[Dict] = []
+        with self._connection() as conn:
+            conn.row_factory = self._dict_factory
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'consumer_edges'"
+            )
+            if cursor.fetchone() is None:
+                return [
+                    {
+                        "error": "consumer_index_unavailable",
+                        "action": "Run build to create the consumer index.",
+                    }
+                ]
+
+            requested_targets = [("name", name) for name in names]
+            requested_targets.extend(("id", symbol_id) for symbol_id in ids)
+            for target_kind, value in requested_targets:
+                if target_kind == "name":
+                    targets, error = self._consumer_targets_by_name(value, cursor)
+                else:
+                    targets, error = self._consumer_target_by_id(value, cursor)
+
+                if error:
+                    result: Dict[str, Any] = {
+                        "query": {target_kind: value},
+                        "error": error,
+                    }
+                    if error == "ambiguous_target":
+                        result["candidates"] = [
+                            self._consumer_target_payload(target)
+                            for target in targets
+                        ]
+                    results.append(result)
+                    continue
+
+                target = targets[0]
+                results.append(
+                    {
+                        "target": self._consumer_target_payload(target),
+                        "consumers": self._consumers_for_target(target, cursor),
+                    }
+                )
+        return results
+
+    def query_callers(self, names: List[str], ids: List[str]) -> List[Dict]:
+        results = self.query_consumers(names, ids)
+        for result in results:
+            consumers = result.pop("consumers", None)
+            if consumers is not None:
+                result["callers"] = [
+                    consumer
+                    for consumer in consumers
+                    if consumer["base_edge_kind"] == "call"
+                ]
         return results

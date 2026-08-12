@@ -5,7 +5,8 @@ import concurrent.futures
 from pathlib import Path
 from typing import Optional, Set, List, Tuple
 
-from prmg.storage.models import File, Symbol, Edge
+from prmg.core.command_dependencies import scan_ci_command_references
+from prmg.storage.models import ConsumerReference, File, Symbol, Edge
 from prmg.storage.storage import DatabaseManager
 from prmg.parser.base import BaseParser
 from prmg.core.tracker import DependencyTracker
@@ -31,7 +32,7 @@ class RepoScanner:
         self.ignore_patterns = self._load_gitignore()
 
     def _load_gitignore(self) -> List[str]:
-        patterns = ['__pycache__', '.git', '.venv']
+        patterns = ['__pycache__', '.git', '.repometa', '.venv']
         gitignore_path = self.root_path / '.gitignore'
         if gitignore_path.exists():
             with open(gitignore_path, 'r', encoding='utf-8') as f:
@@ -124,11 +125,13 @@ class RepoScanner:
             with self.storage.get_connection() as conn:
                 cursor = conn.cursor()
                 for filepath in to_delete:
+                    self.storage.delete_consumer_references(filepath, conn=conn)
                     cursor.execute("DELETE FROM files WHERE filepath = ?", (filepath,))
                     self.tracker.remove_file(filepath)
                 conn.commit()
 
         if not to_parse:
+            self._refresh_external_consumers()
             return
 
         # Step 4: Parallel execution with ProcessPoolExecutor
@@ -155,12 +158,27 @@ class RepoScanner:
         if parsed_results:
             self._commit_batch(parsed_results)
 
+        self._refresh_external_consumers()
+
+    def _refresh_external_consumers(self) -> None:
+        ci_references = scan_ci_command_references(self.root_path, self._is_ignored)
+        self.storage.replace_origin_consumer_references(
+            ci_references,
+            origin="ci_command",
+        )
+        self.storage.resolve_consumer_references()
+
     def _commit_batch(self, batch: List[Tuple[str, List[Symbol], List[Edge]]]):
         try:
             with self.storage.get_connection() as conn:
                 for filepath, symbols, edges in batch:
                     file_hash = self._compute_hash(filepath)
                     last_modified = os.path.getmtime(filepath)
+                    local_id_to_qualname = {
+                        symbol.id: symbol.qualname
+                        for symbol in symbols
+                        if symbol.id is not None
+                    }
                     
                     # Force cleanup: Ensures that previously recorded symbols and edges 
                     # are fully deleted before re-inserting, specifically addressing 
@@ -184,13 +202,39 @@ class RepoScanner:
                     
                     # Update edges with new source symbol DB IDs and extract imports
                     imports = set()
+                    consumer_references: list[ConsumerReference] = []
                     for edge in edges:
+                        local_source_id = edge.source_symbol_id
+                        source_qualname = local_id_to_qualname.get(local_source_id, "")
+                        base_edge_kind = {
+                            "calls": "call",
+                            "imports": "import",
+                            "inherits": "inherit",
+                            "references": "reference",
+                        }.get(edge.edge_type, edge.edge_type)
+                        consumer_references.append(
+                            ConsumerReference(
+                                source_path=filepath,
+                                source_symbol_qualname=source_qualname,
+                                target_qualname=edge.target_qualname,
+                                base_edge_kind=base_edge_kind,
+                                line_start=edge.line_start or 1,
+                                col_start=edge.col_start or 0,
+                                raw_reference=edge.raw_reference or edge.target_qualname,
+                            )
+                        )
                         if edge.source_symbol_id in old_to_new_id:
                             edge.source_symbol_id = old_to_new_id[edge.source_symbol_id]
                         if edge.edge_type == 'imports':
                             imports.add(edge.target_qualname)
                             
                     self.storage.insert_edges(edges, conn=conn)
+                    self.storage.replace_consumer_references(
+                        filepath,
+                        consumer_references,
+                        origin="python_ast",
+                        conn=conn,
+                    )
                     
                     # Update dependencies in Tracker
                     self.tracker.update_relations(filepath, imports, conn=conn)

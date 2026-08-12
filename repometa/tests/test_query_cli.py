@@ -409,3 +409,513 @@ def test_export_all_writes_output_path(export_repo, tmp_path):
     assert result.stdout == ""
     assert output_path.read_text(encoding="utf-8").endswith("\n")
     assert "def run():" in output_path.read_text(encoding="utf-8")
+
+
+def test_query_consumers_reports_mechanical_python_and_ci_edges(tmp_path):
+    repo_path = tmp_path / "consumer_repo"
+    package_path = repo_path / "src" / "pkg" / "__init__.py"
+    target_path = repo_path / "src" / "pkg" / "target.py"
+    consumer_path = repo_path / "src" / "pkg" / "consumer.py"
+    wildcard_path = repo_path / "src" / "pkg" / "wildcard.py"
+    test_path = repo_path / "tests" / "test_target.py"
+    smoke_path = repo_path / "tools" / "ci_target_smoke.py"
+    local_ci_path = repo_path / "tools" / "ci_minimum_local.py"
+    workflow_path = repo_path / ".github" / "workflows" / "ci.yml"
+
+    for path in (
+        package_path,
+        target_path,
+        consumer_path,
+        wildcard_path,
+        test_path,
+        smoke_path,
+        local_ci_path,
+        workflow_path,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    package_path.write_text(
+        "from pkg.target import Service\n",
+        encoding="utf-8",
+    )
+
+    target_path.write_text(
+        '''
+TARGET_DATA = {"enabled": True}
+COUNT = 0
+
+def target_function():
+    return TARGET_DATA
+
+class Service:
+    def run(self):
+        return True
+
+HANDLERS = [target_function]
+
+class BaseService:
+    def inherited(self):
+        return True
+
+class DerivedService(BaseService):
+    pass
+
+def make_base():
+    return object
+
+def make_service():
+    def run():
+        return False
+    return Service()
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    consumer_path.write_text(
+        '''
+from pkg import Service as PublicService
+from pkg.target import COUNT, DerivedService, HANDLERS, Service, TARGET_DATA, make_base, make_service, target_function
+
+Alias = Service
+
+class Shadowed:
+    target_function = None
+
+    def invoke(self):
+        target_function()
+
+shadowed_lambda = lambda target_function: target_function()
+module_comprehension = [target_function() for target_function in []]
+
+if True:
+    def nested_helper():
+        target_function()
+else:
+    def nested_helper():
+        target_function()
+
+class Dynamic(make_base()):
+    pass
+
+def production_entry():
+    value = TARGET_DATA
+    target_function()
+    service = Service()
+    service.run()
+    return value
+
+def annotated_entry(service: Service):
+    service.run()
+
+def constructed_entry():
+    Service().run()
+
+def alias_entry():
+    Alias.run()
+
+def handler_entry():
+    HANDLERS[0]()
+
+def forward_entry(service: "Service"):
+    service.run()
+
+def reexport_entry():
+    PublicService().run()
+
+def inherited_entry():
+    DerivedService().inherited()
+
+def nested_entry():
+    nested_helper()
+
+def comprehension_entry(items):
+    [target_function for target_function in items]
+    target_function()
+
+def count_entry():
+    global COUNT
+    COUNT += 1
+
+def factory_entry():
+    service = make_service()
+    service.run()
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    wildcard_path.write_text(
+        "from pkg.target import *\n",
+        encoding="utf-8",
+    )
+    test_path.write_text(
+        '''
+from pkg.target import target_function
+
+def test_target_function():
+    target_function()
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    smoke_path.write_text(
+        '''
+from pkg.target import target_function
+
+def main():
+    target_function()
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    local_ci_path.write_text(
+        '''
+import subprocess
+import sys
+
+MODULE = "pkg.target"
+
+def run_checks():
+    command = [sys.executable, "-m", MODULE]
+    subprocess.run(command, check=True)
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    workflow_path.write_text(
+        '''
+jobs:
+  checks:
+    steps:
+      - run: |
+          poetry run python `
+            -X utf8 `
+            -m pkg.target
+          echo target_function
+'''.lstrip(),
+        encoding="utf-8",
+    )
+
+    build_result = runner.invoke(app, ["build", str(repo_path)])
+    assert build_result.exit_code == 0, build_result.output
+    db_path = repo_path / ".repometa" / "repometa.db"
+
+    function_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.target_function",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert function_result.exit_code == 0, function_result.output
+    function_payload = json.loads(function_result.stdout)
+    assert function_payload[0]["target"]["qualname"] == "pkg.target.target_function"
+    function_consumers = function_payload[0]["consumers"]
+    function_edges = {consumer["edge_kind"] for consumer in function_consumers}
+    assert {"call", "import", "test_call", "smoke_call"} <= function_edges
+    assert not any(consumer["path"] == str(workflow_path.resolve()) for consumer in function_consumers)
+    assert all(consumer["resolution"] == "resolved" for consumer in function_consumers)
+    assert all(consumer["direct"] is True for consumer in function_consumers)
+
+    callers_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.target_function",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert callers_result.exit_code == 0, callers_result.output
+    callers_payload = json.loads(callers_result.stdout)
+    assert callers_payload[0]["target"] == function_payload[0]["target"]
+    callers = callers_payload[0]["callers"]
+    assert {caller["edge_kind"] for caller in callers} == {
+        "call",
+        "test_call",
+        "smoke_call",
+    }
+    assert all(caller["base_edge_kind"] == "call" for caller in callers)
+    assert {caller["source_symbol"] for caller in callers} == {
+        "pkg.consumer.Shadowed.invoke",
+        "pkg.consumer.comprehension_entry",
+        "pkg.consumer.nested_helper",
+        "pkg.consumer.production_entry",
+        "tests.test_target.test_target_function",
+        "tools.ci_target_smoke.main",
+    }
+    assert "pkg.consumer" not in {
+        caller["source_symbol"] for caller in callers
+    }
+
+    data_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.TARGET_DATA",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert data_result.exit_code == 0, data_result.output
+    data_consumers = json.loads(data_result.stdout)[0]["consumers"]
+    assert any(
+        consumer["edge_kind"] == "data_dependency"
+        and consumer["source_symbol"] == "pkg.consumer.production_entry"
+        for consumer in data_consumers
+    )
+
+    count_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.COUNT",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert count_result.exit_code == 0, count_result.output
+    assert any(
+        consumer["edge_kind"] == "data_dependency"
+        and consumer["source_symbol"] == "pkg.consumer.count_entry"
+        for consumer in json.loads(count_result.stdout)[0]["consumers"]
+    )
+
+    handlers_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.HANDLERS",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert handlers_result.exit_code == 0, handlers_result.output
+    assert any(
+        consumer["edge_kind"] == "data_dependency"
+        and consumer["source_symbol"] == "pkg.consumer.handler_entry"
+        for consumer in json.loads(handlers_result.stdout)[0]["consumers"]
+    )
+
+    method_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.Service.run",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert method_result.exit_code == 0, method_result.output
+    method_consumers = json.loads(method_result.stdout)[0]["consumers"]
+    assert any(
+        consumer["edge_kind"] == "call"
+        and consumer["source_symbol"] == "pkg.consumer.production_entry"
+        for consumer in method_consumers
+    )
+    assert {
+        consumer["source_symbol"]
+        for consumer in method_consumers
+        if consumer["edge_kind"] == "call"
+    } >= {
+        "pkg.consumer.alias_entry",
+        "pkg.consumer.annotated_entry",
+        "pkg.consumer.constructed_entry",
+        "pkg.consumer.forward_entry",
+        "pkg.consumer.production_entry",
+        "pkg.consumer.reexport_entry",
+    }
+
+    factory_method_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.make_service.run",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert factory_method_result.exit_code == 0, factory_method_result.output
+    assert not any(
+        caller["source_symbol"] == "pkg.consumer.factory_entry"
+        for caller in json.loads(factory_method_result.stdout)[0]["callers"]
+    )
+
+    inherited_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.BaseService.inherited",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert inherited_result.exit_code == 0, inherited_result.output
+    assert any(
+        caller["source_symbol"] == "pkg.consumer.inherited_entry"
+        for caller in json.loads(inherited_result.stdout)[0]["callers"]
+    )
+
+    nested_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.consumer.nested_helper",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert nested_result.exit_code == 0, nested_result.output
+    assert any(
+        caller["source_symbol"] == "pkg.consumer.nested_entry"
+        for caller in json.loads(nested_result.stdout)[0]["callers"]
+    )
+
+    class_base_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.make_base",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert class_base_result.exit_code == 0, class_base_result.output
+    assert any(
+        caller["source_symbol"] == "pkg.consumer"
+        for caller in json.loads(class_base_result.stdout)[0]["callers"]
+    )
+
+    module_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert module_result.exit_code == 0, module_result.output
+    module_consumers = json.loads(module_result.stdout)[0]["consumers"]
+    command_paths = {
+        consumer["path"]
+        for consumer in module_consumers
+        if consumer["edge_kind"] == "command_dependency"
+    }
+    assert str(local_ci_path.resolve()) in command_paths
+    assert str(workflow_path.resolve()) in command_paths
+    assert any(
+        consumer["path"] == str(wildcard_path.resolve())
+        and consumer["base_edge_kind"] == "import"
+        and consumer["matched_target_qualname"] == "pkg.target"
+        for consumer in module_consumers
+    )
+
+    module_callers_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert module_callers_result.exit_code == 0, module_callers_result.output
+    module_callers = json.loads(module_callers_result.stdout)[0]["callers"]
+    assert module_callers
+    assert all(caller["base_edge_kind"] == "call" for caller in module_callers)
+    assert not {str(local_ci_path.resolve()), str(workflow_path.resolve())} & {
+        caller["path"] for caller in module_callers
+    }
+
+    consumer_path.write_text(
+        "from pkg.target import target_function\n",
+        encoding="utf-8",
+    )
+    workflow_path.write_text(
+        "jobs:\n  checks:\n    steps:\n      - run: echo pkg.target\n",
+        encoding="utf-8",
+    )
+    rebuild_result = runner.invoke(app, ["build", str(repo_path)])
+    assert rebuild_result.exit_code == 0, rebuild_result.output
+
+    refreshed_function_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.target_function",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    refreshed_function_consumers = json.loads(refreshed_function_result.stdout)[0]["consumers"]
+    assert not any(
+        consumer["path"] == str(consumer_path.resolve())
+        and consumer["base_edge_kind"] == "call"
+        for consumer in refreshed_function_consumers
+    )
+
+    refreshed_module_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    refreshed_module_consumers = json.loads(refreshed_module_result.stdout)[0]["consumers"]
+    assert not any(
+        consumer["path"] == str(workflow_path.resolve())
+        and consumer["edge_kind"] == "command_dependency"
+        for consumer in refreshed_module_consumers
+    )
+
+
+def test_query_consumers_rejects_ambiguous_short_name(tmp_path):
+    db_path = tmp_path / "ambiguous.db"
+    db = DatabaseManager(str(db_path))
+    db.create_tables()
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO files (id, filepath, file_hash, last_modified) VALUES (1, 'a.py', 'a', 1)"
+        )
+        conn.execute(
+            "INSERT INTO files (id, filepath, file_hash, last_modified) VALUES (2, 'b.py', 'b', 1)"
+        )
+        conn.execute(
+            """
+            INSERT INTO symbols (
+                id, file_id, symbol_type, name, qualname, line_start, line_end
+            ) VALUES (1, 1, 'function', 'shared', 'a.shared', 1, 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO symbols (
+                id, file_id, symbol_type, name, qualname, line_start, line_end
+            ) VALUES (2, 2, 'function', 'shared', 'b.shared', 1, 1)
+            """
+        )
+
+    result = runner.invoke(
+        app,
+        ["query", "consumers", "shared", "--db-path", str(db_path)],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload[0]["error"] == "ambiguous_target"
+    assert [candidate["qualname"] for candidate in payload[0]["candidates"]] == [
+        "a.shared",
+        "b.shared",
+    ]
