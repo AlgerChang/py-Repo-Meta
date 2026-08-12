@@ -132,7 +132,10 @@ def _iter_run_commands(text: str) -> Iterable[tuple[int, str]]:
             block.append(line.strip())
             index += 1
         if block:
-            yield directive_line, "\n".join(block)
+            # ponytail: this implements simple YAML folding; use a YAML parser if
+            # blank-line and chomping-indicator fidelity becomes necessary.
+            separator = " " if value.startswith(">") else "\n"
+            yield directive_line, separator.join(block)
 
 
 def _is_ci_yaml(path: Path, project_root: Path) -> bool:

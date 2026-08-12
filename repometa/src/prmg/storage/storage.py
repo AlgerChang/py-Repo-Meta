@@ -313,9 +313,9 @@ class DatabaseManager:
             )
 
             symbols = {
-                qualname: (symbol_id, symbol_type)
-                for symbol_id, qualname, symbol_type in conn.execute(
-                    "SELECT id, qualname, symbol_type FROM symbols"
+                qualname: (symbol_id, symbol_type, parent_id)
+                for symbol_id, qualname, symbol_type, parent_id in conn.execute(
+                    "SELECT id, qualname, symbol_type, parent_id FROM symbols"
                 )
             }
             reexport_candidates: dict[str, set[str]] = {}
@@ -382,6 +382,38 @@ class DatabaseManager:
                         )
                     break
 
+            symbols_by_id = {symbol[0]: symbol for symbol in symbols.values()}
+            for rowid, target, raw_reference in conn.execute(
+                """
+                SELECT rowid, target_qualname, raw_reference
+                FROM consumer_edges
+                WHERE resolution = 'resolved'
+                  AND base_edge_kind = 'call'
+                """
+            ).fetchall():
+                matched_symbol = symbols.get(target)
+                if not matched_symbol or not matched_symbol[2]:
+                    continue
+                parent_symbol = symbols_by_id.get(matched_symbol[2])
+                if not parent_symbol or parent_symbol[1] not in {"function", "method"}:
+                    continue
+                try:
+                    expression = ast.parse(raw_reference, mode="eval").body
+                except SyntaxError:
+                    continue
+                if isinstance(expression, ast.Call) and isinstance(
+                    expression.func,
+                    ast.Attribute,
+                ):
+                    conn.execute(
+                        """
+                        UPDATE consumer_edges
+                        SET target_symbol_id = NULL, resolution = 'unresolved'
+                        WHERE rowid = ?
+                        """,
+                        (rowid,),
+                    )
+
             bases: dict[str, list[str]] = {}
             for source, target in conn.execute(
                 """
@@ -407,7 +439,7 @@ class DatabaseManager:
                 """
             ).fetchall():
                 owner, separator, member = target.rpartition(".")
-                if not separator or symbols.get(owner, (None, None))[1] != "class":
+                if not separator or symbols.get(owner, (None, None, None))[1] != "class":
                     continue
                 defining_methods: set[str] = set()
                 pending = list(bases.get(owner, []))

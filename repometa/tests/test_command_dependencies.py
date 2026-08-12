@@ -28,6 +28,17 @@ def test_scan_ci_commands_supports_native_keys_and_preserves_argument_quotes(tmp
         ".github/workflows/ci.yml": (
             'jobs:\n  check:\n    steps:\n      - run: python -m pkg.github --name "foo"\n'
         ),
+        ".github/workflows/scalars.yml": (
+            "jobs:\n"
+            "  check:\n"
+            "    steps:\n"
+            "      - run: >\n"
+            "          python -m\n"
+            "          pkg.folded\n"
+            "      - run: |\n"
+            "          python -m\n"
+            "          pkg.literal\n"
+        ),
     }
     for relative_path, text in files.items():
         path = tmp_path / relative_path
@@ -39,6 +50,7 @@ def test_scan_ci_commands_supports_native_keys_and_preserves_argument_quotes(tmp
     assert {reference.target_qualname for reference in references} == {
         "pkg.azure_powershell",
         "pkg.azure_script",
+        "pkg.folded",
         "pkg.github",
         "pkg.gitlab",
     }

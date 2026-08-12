@@ -416,6 +416,7 @@ def test_query_consumers_reports_mechanical_python_and_ci_edges(tmp_path):
     package_path = repo_path / "src" / "pkg" / "__init__.py"
     target_path = repo_path / "src" / "pkg" / "target.py"
     consumer_path = repo_path / "src" / "pkg" / "consumer.py"
+    wildcard_path = repo_path / "src" / "pkg" / "wildcard.py"
     test_path = repo_path / "tests" / "test_target.py"
     smoke_path = repo_path / "tools" / "ci_target_smoke.py"
     local_ci_path = repo_path / "tools" / "ci_minimum_local.py"
@@ -425,6 +426,7 @@ def test_query_consumers_reports_mechanical_python_and_ci_edges(tmp_path):
         package_path,
         target_path,
         consumer_path,
+        wildcard_path,
         test_path,
         smoke_path,
         local_ci_path,
@@ -440,6 +442,7 @@ def test_query_consumers_reports_mechanical_python_and_ci_edges(tmp_path):
     target_path.write_text(
         '''
 TARGET_DATA = {"enabled": True}
+COUNT = 0
 
 def target_function():
     return TARGET_DATA
@@ -456,13 +459,21 @@ class BaseService:
 
 class DerivedService(BaseService):
     pass
+
+def make_base():
+    return object
+
+def make_service():
+    def run():
+        return False
+    return Service()
 '''.lstrip(),
         encoding="utf-8",
     )
     consumer_path.write_text(
         '''
 from pkg import Service as PublicService
-from pkg.target import DerivedService, HANDLERS, Service, TARGET_DATA, target_function
+from pkg.target import COUNT, DerivedService, HANDLERS, Service, TARGET_DATA, make_base, make_service, target_function
 
 Alias = Service
 
@@ -473,10 +484,17 @@ class Shadowed:
         target_function()
 
 shadowed_lambda = lambda target_function: target_function()
+module_comprehension = [target_function() for target_function in []]
 
 if True:
     def nested_helper():
-        return True
+        target_function()
+else:
+    def nested_helper():
+        target_function()
+
+class Dynamic(make_base()):
+    pass
 
 def production_entry():
     value = TARGET_DATA
@@ -508,7 +526,23 @@ def inherited_entry():
 
 def nested_entry():
     nested_helper()
+
+def comprehension_entry(items):
+    [target_function for target_function in items]
+    target_function()
+
+def count_entry():
+    global COUNT
+    COUNT += 1
+
+def factory_entry():
+    service = make_service()
+    service.run()
 '''.lstrip(),
+        encoding="utf-8",
+    )
+    wildcard_path.write_text(
+        "from pkg.target import *\n",
         encoding="utf-8",
     )
     test_path.write_text(
@@ -602,6 +636,8 @@ jobs:
     assert all(caller["base_edge_kind"] == "call" for caller in callers)
     assert {caller["source_symbol"] for caller in callers} == {
         "pkg.consumer.Shadowed.invoke",
+        "pkg.consumer.comprehension_entry",
+        "pkg.consumer.nested_helper",
         "pkg.consumer.production_entry",
         "tests.test_target.test_target_function",
         "tools.ci_target_smoke.main",
@@ -626,6 +662,23 @@ jobs:
         consumer["edge_kind"] == "data_dependency"
         and consumer["source_symbol"] == "pkg.consumer.production_entry"
         for consumer in data_consumers
+    )
+
+    count_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.COUNT",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert count_result.exit_code == 0, count_result.output
+    assert any(
+        consumer["edge_kind"] == "data_dependency"
+        and consumer["source_symbol"] == "pkg.consumer.count_entry"
+        for consumer in json.loads(count_result.stdout)[0]["consumers"]
     )
 
     handlers_result = runner.invoke(
@@ -675,6 +728,22 @@ jobs:
         "pkg.consumer.reexport_entry",
     }
 
+    factory_method_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.make_service.run",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert factory_method_result.exit_code == 0, factory_method_result.output
+    assert not any(
+        caller["source_symbol"] == "pkg.consumer.factory_entry"
+        for caller in json.loads(factory_method_result.stdout)[0]["callers"]
+    )
+
     inherited_result = runner.invoke(
         app,
         [
@@ -707,6 +776,22 @@ jobs:
         for caller in json.loads(nested_result.stdout)[0]["callers"]
     )
 
+    class_base_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.make_base",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert class_base_result.exit_code == 0, class_base_result.output
+    assert any(
+        caller["source_symbol"] == "pkg.consumer"
+        for caller in json.loads(class_base_result.stdout)[0]["callers"]
+    )
+
     module_result = runner.invoke(
         app,
         [
@@ -726,6 +811,12 @@ jobs:
     }
     assert str(local_ci_path.resolve()) in command_paths
     assert str(workflow_path.resolve()) in command_paths
+    assert any(
+        consumer["path"] == str(wildcard_path.resolve())
+        and consumer["base_edge_kind"] == "import"
+        and consumer["matched_target_qualname"] == "pkg.target"
+        for consumer in module_consumers
+    )
 
     module_callers_result = runner.invoke(
         app,

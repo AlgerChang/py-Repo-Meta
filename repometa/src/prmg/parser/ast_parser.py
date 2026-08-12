@@ -40,9 +40,13 @@ class _LocalNameCollector(ast.NodeVisitor):
         self.names: set[str] = set()
         self.nonlocal_names: set[str] = set()
         self.definitions: set[str] = set()
+        self._comprehension_targets: set[str] = set()
 
     def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
+        if (
+            isinstance(node.ctx, (ast.Store, ast.Del))
+            and node.id not in self._comprehension_targets
+        ):
             self.names.add(node.id)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -59,6 +63,37 @@ class _LocalNameCollector(ast.NodeVisitor):
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         return
+
+    def _visit_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        values: list[ast.AST],
+    ) -> None:
+        saved_targets = set(self._comprehension_targets)
+        for generator in node.generators:
+            self.visit(generator.iter)
+            self._comprehension_targets.update(
+                child.id
+                for child in ast.walk(generator.target)
+                if isinstance(child, ast.Name)
+            )
+            for condition in generator.ifs:
+                self.visit(condition)
+        for value in values:
+            self.visit(value)
+        self._comprehension_targets = saved_targets
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node, [node.elt])
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node, [node.elt])
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node, [node.key, node.value])
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node, [node.elt])
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -104,6 +139,7 @@ class _MetadataVisitor(ast.NodeVisitor):
         self._command_stack: list[dict[str, Optional[list[str]]]] = []
         self._constant_stack: list[dict[str, Optional[str]]] = []
         self._symbol_qualnames: set[str] = set()
+        self._symbol_ids_by_qualname: dict[str, int] = {}
         self._declared_code_qualnames: set[str] = set()
 
     def _should_include(self, name: str) -> bool:
@@ -161,6 +197,16 @@ class _MetadataVisitor(ast.NodeVisitor):
     @property
     def _current_namespace_type(self) -> str:
         return self._namespace_stack[-1][1] if self._namespace_stack else "module"
+
+    def _claim_symbol_id(self, qualname: str) -> tuple[int, bool]:
+        existing_id = self._symbol_ids_by_qualname.get(qualname)
+        if existing_id is not None:
+            # ponytail: alternative definitions share first-definition metadata;
+            # add branch-aware symbol variants before exposing both definitions.
+            return existing_id, False
+        self.current_id += 1
+        self._symbol_ids_by_qualname[qualname] = self.current_id
+        return self.current_id, True
 
     def _lookup(self, stack: list[dict[str, Any]], name: str) -> Any:
         skip_class_scope = self._current_namespace_type in {"function", "method"}
@@ -304,11 +350,11 @@ class _MetadataVisitor(ast.NodeVisitor):
         qualname = f"{self.current_qualname}.{name}"
         if qualname in self._symbol_qualnames or qualname in self._declared_code_qualnames:
             return
-        self.current_id += 1
+        sym_id, _ = self._claim_symbol_id(qualname)
         self.symbols.append(
             Symbol(
                 file_id=0,
-                id=self.current_id,
+                id=sym_id,
                 symbol_type="data",
                 name=name,
                 qualname=qualname,
@@ -389,11 +435,9 @@ class _MetadataVisitor(ast.NodeVisitor):
         return None
 
     def visit_Module(self, node: ast.Module):
-        self.current_id += 1
-        sym_id = self.current_id
-        
         qualname = self.module_fqn
         name = self.module_fqn.split('.')[-1] if self.module_fqn else ''
+        sym_id, _ = self._claim_symbol_id(qualname)
         
         sym = Symbol(
             file_id=0,
@@ -430,28 +474,27 @@ class _MetadataVisitor(ast.NodeVisitor):
 
         parent_qualname = self._get_parent_qualname()
         
-        self.current_id += 1
-        sym_id = self.current_id
         qualname = f"{parent_qualname}.{node.name}" if parent_qualname else node.name
-        
-        sym = Symbol(
-            file_id=0,
-            id=sym_id,
-            symbol_type='class',
-            name=node.name,
-            qualname=qualname,
-            line_start=node.lineno,
-            line_end=node.end_lineno or node.lineno,
-            parent_id=None,
-            parent_qualname=parent_qualname,
-            docstring=ast.get_docstring(node),
-            metadata={}
-        )
-        ext_meta = self.plugin_manager.run_visit_node(node, self._get_local_context())
-        if ext_meta:
-            sym.metadata["plugins"] = ext_meta
-        self.symbols.append(sym)
-        self._symbol_qualnames.add(qualname)
+        sym_id, is_new = self._claim_symbol_id(qualname)
+        if is_new:
+            sym = Symbol(
+                file_id=0,
+                id=sym_id,
+                symbol_type='class',
+                name=node.name,
+                qualname=qualname,
+                line_start=node.lineno,
+                line_end=node.end_lineno or node.lineno,
+                parent_id=None,
+                parent_qualname=parent_qualname,
+                docstring=ast.get_docstring(node),
+                metadata={}
+            )
+            ext_meta = self.plugin_manager.run_visit_node(node, self._get_local_context())
+            if ext_meta:
+                sym.metadata["plugins"] = ext_meta
+            self.symbols.append(sym)
+            self._symbol_qualnames.add(qualname)
         
         for base in node.bases:
             base_target = self._resolve_expr(base) or self._raw(base)
@@ -465,6 +508,8 @@ class _MetadataVisitor(ast.NodeVisitor):
                     raw_reference=self._raw(base),
                 )
             )
+            if any(isinstance(child, ast.Call) for child in ast.walk(base)):
+                self.visit(base)
 
         self._push_namespace(node.name, 'class', sym_id)
         self._prebind_symbol_definitions(node.body)
@@ -514,32 +559,31 @@ class _MetadataVisitor(ast.NodeVisitor):
                 argument_types[argument.arg] = resolved_annotation
         annotation_references.extend(self._annotation_targets(node.returns))
         
-        self.current_id += 1
-        sym_id = self.current_id
         qualname = f"{parent_qualname}.{node.name}" if parent_qualname else node.name
-        
-        sym = Symbol(
-            file_id=0,
-            id=sym_id,
-            symbol_type=sym_type,
-            name=node.name,
-            qualname=qualname,
-            line_start=node.lineno,
-            line_end=node.end_lineno or node.lineno,
-            parent_id=None,
-            parent_qualname=parent_qualname,
-            docstring=ast.get_docstring(node),
-            metadata={
-                "is_async": is_async,
-                "args": self._extract_args(node.args),
-                "returns": self._extract_return_type(node)
-            }
-        )
-        ext_meta = self.plugin_manager.run_visit_node(node, self._get_local_context())
-        if ext_meta:
-            sym.metadata["plugins"] = ext_meta
-        self.symbols.append(sym)
-        self._symbol_qualnames.add(qualname)
+        sym_id, is_new = self._claim_symbol_id(qualname)
+        if is_new:
+            sym = Symbol(
+                file_id=0,
+                id=sym_id,
+                symbol_type=sym_type,
+                name=node.name,
+                qualname=qualname,
+                line_start=node.lineno,
+                line_end=node.end_lineno or node.lineno,
+                parent_id=None,
+                parent_qualname=parent_qualname,
+                docstring=ast.get_docstring(node),
+                metadata={
+                    "is_async": is_async,
+                    "args": self._extract_args(node.args),
+                    "returns": self._extract_return_type(node)
+                }
+            )
+            ext_meta = self.plugin_manager.run_visit_node(node, self._get_local_context())
+            if ext_meta:
+                sym.metadata["plugins"] = ext_meta
+            self.symbols.append(sym)
+            self._symbol_qualnames.add(qualname)
 
         collector = _LocalNameCollector()
         for child in node.body:
@@ -599,7 +643,11 @@ class _MetadataVisitor(ast.NodeVisitor):
             target_mod = module
 
         for alias in node.names:
-            target_qualname = f"{target_mod}.{alias.name}" if target_mod else alias.name
+            target_qualname = (
+                target_mod
+                if alias.name == "*"
+                else f"{target_mod}.{alias.name}" if target_mod else alias.name
+            )
             self._append_edge(target_qualname, "imports", node)
             if alias.name != "*":
                 bound_name = alias.asname or alias.name
@@ -677,6 +725,14 @@ class _MetadataVisitor(ast.NodeVisitor):
             self._assignment_names(node.target),
             node.value,
         )
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        target = self._resolve_expr(node.target)
+        if target:
+            self._append_edge(target, "references", node.target)
+        else:
+            self.visit(node.target)
+        self.visit(node.value)
 
     def _command_tokens_from_ast(self, node: ast.AST) -> Optional[list[str]]:
         if isinstance(node, (ast.List, ast.Tuple)):
@@ -772,6 +828,39 @@ class _MetadataVisitor(ast.NodeVisitor):
         )
         self.visit(node.body)
         self._pop_namespace()
+
+    def _visit_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        values: list[ast.AST],
+    ) -> None:
+        source_symbol_id = self._current_symbol_id
+        first_generator = node.generators[0]
+        self.visit(first_generator.iter)
+        self._push_namespace("", "function", source_symbol_id)
+        for index, generator in enumerate(node.generators):
+            if index:
+                self.visit(generator.iter)
+            for name in self._assignment_names(generator.target):
+                self._bind(name, None)
+                self._clear_derived_bindings(name)
+            for condition in generator.ifs:
+                self.visit(condition)
+        for value in values:
+            self.visit(value)
+        self._pop_namespace()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node, [node.elt])
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node, [node.elt])
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node, [node.key, node.value])
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node, [node.elt])
 
     def visit_Name(self, node: ast.Name) -> None:
         if not isinstance(node.ctx, ast.Load):

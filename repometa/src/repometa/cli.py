@@ -17,7 +17,7 @@ from repometa.query_cli import query_app
 app = typer.Typer(help="repometa: Python repository metadata extractor")
 app.add_typer(query_app, name="query")
 
-CONSUMER_INDEX_VERSION = "2"
+CONSUMER_INDEX_VERSION = "3"
 
 
 def get_db_path(repo_path: Path) -> Path:
