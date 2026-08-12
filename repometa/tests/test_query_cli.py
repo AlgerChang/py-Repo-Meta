@@ -413,6 +413,7 @@ def test_export_all_writes_output_path(export_repo, tmp_path):
 
 def test_query_consumers_reports_mechanical_python_and_ci_edges(tmp_path):
     repo_path = tmp_path / "consumer_repo"
+    package_path = repo_path / "src" / "pkg" / "__init__.py"
     target_path = repo_path / "src" / "pkg" / "target.py"
     consumer_path = repo_path / "src" / "pkg" / "consumer.py"
     test_path = repo_path / "tests" / "test_target.py"
@@ -421,6 +422,7 @@ def test_query_consumers_reports_mechanical_python_and_ci_edges(tmp_path):
     workflow_path = repo_path / ".github" / "workflows" / "ci.yml"
 
     for path in (
+        package_path,
         target_path,
         consumer_path,
         test_path,
@@ -429,6 +431,11 @@ def test_query_consumers_reports_mechanical_python_and_ci_edges(tmp_path):
         workflow_path,
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
+
+    package_path.write_text(
+        "from pkg.target import Service\n",
+        encoding="utf-8",
+    )
 
     target_path.write_text(
         '''
@@ -440,12 +447,36 @@ def target_function():
 class Service:
     def run(self):
         return True
+
+HANDLERS = [target_function]
+
+class BaseService:
+    def inherited(self):
+        return True
+
+class DerivedService(BaseService):
+    pass
 '''.lstrip(),
         encoding="utf-8",
     )
     consumer_path.write_text(
         '''
-from pkg.target import Service, TARGET_DATA, target_function
+from pkg import Service as PublicService
+from pkg.target import DerivedService, HANDLERS, Service, TARGET_DATA, target_function
+
+Alias = Service
+
+class Shadowed:
+    target_function = None
+
+    def invoke(self):
+        target_function()
+
+shadowed_lambda = lambda target_function: target_function()
+
+if True:
+    def nested_helper():
+        return True
 
 def production_entry():
     value = TARGET_DATA
@@ -459,6 +490,24 @@ def annotated_entry(service: Service):
 
 def constructed_entry():
     Service().run()
+
+def alias_entry():
+    Alias.run()
+
+def handler_entry():
+    HANDLERS[0]()
+
+def forward_entry(service: "Service"):
+    service.run()
+
+def reexport_entry():
+    PublicService().run()
+
+def inherited_entry():
+    DerivedService().inherited()
+
+def nested_entry():
+    nested_helper()
 '''.lstrip(),
         encoding="utf-8",
     )
@@ -552,9 +601,13 @@ jobs:
     }
     assert all(caller["base_edge_kind"] == "call" for caller in callers)
     assert {caller["source_symbol"] for caller in callers} == {
+        "pkg.consumer.Shadowed.invoke",
         "pkg.consumer.production_entry",
         "tests.test_target.test_target_function",
         "tools.ci_target_smoke.main",
+    }
+    assert "pkg.consumer" not in {
+        caller["source_symbol"] for caller in callers
     }
 
     data_result = runner.invoke(
@@ -573,6 +626,23 @@ jobs:
         consumer["edge_kind"] == "data_dependency"
         and consumer["source_symbol"] == "pkg.consumer.production_entry"
         for consumer in data_consumers
+    )
+
+    handlers_result = runner.invoke(
+        app,
+        [
+            "query",
+            "consumers",
+            "pkg.target.HANDLERS",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert handlers_result.exit_code == 0, handlers_result.output
+    assert any(
+        consumer["edge_kind"] == "data_dependency"
+        and consumer["source_symbol"] == "pkg.consumer.handler_entry"
+        for consumer in json.loads(handlers_result.stdout)[0]["consumers"]
     )
 
     method_result = runner.invoke(
@@ -597,10 +667,45 @@ jobs:
         for consumer in method_consumers
         if consumer["edge_kind"] == "call"
     } >= {
+        "pkg.consumer.alias_entry",
         "pkg.consumer.annotated_entry",
         "pkg.consumer.constructed_entry",
+        "pkg.consumer.forward_entry",
         "pkg.consumer.production_entry",
+        "pkg.consumer.reexport_entry",
     }
+
+    inherited_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.target.BaseService.inherited",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert inherited_result.exit_code == 0, inherited_result.output
+    assert any(
+        caller["source_symbol"] == "pkg.consumer.inherited_entry"
+        for caller in json.loads(inherited_result.stdout)[0]["callers"]
+    )
+
+    nested_result = runner.invoke(
+        app,
+        [
+            "query",
+            "callers",
+            "pkg.consumer.nested_helper",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert nested_result.exit_code == 0, nested_result.output
+    assert any(
+        caller["source_symbol"] == "pkg.consumer.nested_entry"
+        for caller in json.loads(nested_result.stdout)[0]["callers"]
+    )
 
     module_result = runner.invoke(
         app,

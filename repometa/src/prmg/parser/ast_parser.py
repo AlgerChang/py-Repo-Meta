@@ -39,6 +39,7 @@ class _LocalNameCollector(ast.NodeVisitor):
     def __init__(self) -> None:
         self.names: set[str] = set()
         self.nonlocal_names: set[str] = set()
+        self.definitions: set[str] = set()
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
@@ -46,12 +47,15 @@ class _LocalNameCollector(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.names.add(node.name)
+        self.definitions.add(node.name)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.names.add(node.name)
+        self.definitions.add(node.name)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.names.add(node.name)
+        self.definitions.add(node.name)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         return
@@ -159,7 +163,13 @@ class _MetadataVisitor(ast.NodeVisitor):
         return self._namespace_stack[-1][1] if self._namespace_stack else "module"
 
     def _lookup(self, stack: list[dict[str, Any]], name: str) -> Any:
-        for scope in reversed(stack):
+        skip_class_scope = self._current_namespace_type in {"function", "method"}
+        for scope, (_, namespace_type, _) in zip(
+            reversed(stack),
+            reversed(self._namespace_stack),
+        ):
+            if skip_class_scope and namespace_type == "class":
+                continue
             if name in scope:
                 return scope[name]
         return None
@@ -202,6 +212,9 @@ class _MetadataVisitor(ast.NodeVisitor):
                 value_type = self._lookup(self._type_stack, node.value.id)
                 if value_type:
                     return f"{value_type}.{node.attr}"
+                call_alias = self._lookup(self._call_alias_stack, node.value.id)
+                if call_alias:
+                    return f"{call_alias}.{node.attr}"
             base = self._resolve_expr(node.value)
             if base:
                 return f"{base}.{node.attr}"
@@ -227,6 +240,15 @@ class _MetadataVisitor(ast.NodeVisitor):
     def _annotation_targets(self, node: ast.AST | None) -> list[tuple[str, ast.AST]]:
         if node is None:
             return []
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                parsed = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                return []
+            return [
+                (target, node)
+                for target, _ in self._annotation_targets(parsed)
+            ]
         if isinstance(node, ast.Attribute):
             target = self._resolve_expr(node)
             return [(target, node)] if target else []
@@ -255,12 +277,16 @@ class _MetadataVisitor(ast.NodeVisitor):
 
     def _prebind_symbol_definitions(self, body: list[ast.stmt]) -> None:
         parent = self.current_qualname
+        collector = _LocalNameCollector()
         for child in body:
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                qualname = f"{parent}.{child.name}"
-                self._bind(child.name, qualname)
-                self._declared_code_qualnames.add(qualname)
-            elif self._current_namespace_type in {"module", "class"}:
+            collector.visit(child)
+        for name in collector.definitions:
+            qualname = f"{parent}.{name}"
+            self._bind(name, qualname)
+            self._declared_code_qualnames.add(qualname)
+
+        for child in body:
+            if self._current_namespace_type in {"module", "class"}:
                 targets: list[ast.expr] = []
                 if isinstance(child, ast.Assign):
                     targets = child.targets
@@ -714,10 +740,38 @@ class _MetadataVisitor(ast.NodeVisitor):
         self._record_command_dependency(node, call_target)
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
             self.visit(node.func.value)
+        elif call_target is None:
+            self.visit(node.func)
         for argument in node.args:
             self.visit(argument)
         for keyword in node.keywords:
             self.visit(keyword.value)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in [
+            *node.args.defaults,
+            *[value for value in node.args.kw_defaults if value is not None],
+        ]:
+            self.visit(default)
+        arguments = [
+            *getattr(node.args, "posonlyargs", []),
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ]
+        if node.args.vararg:
+            arguments.append(node.args.vararg)
+        if node.args.kwarg:
+            arguments.append(node.args.kwarg)
+
+        source_symbol_id = self._current_symbol_id
+        self._push_namespace(
+            "",
+            "function",
+            source_symbol_id,
+            bindings={argument.arg: None for argument in arguments},
+        )
+        self.visit(node.body)
+        self._pop_namespace()
 
     def visit_Name(self, node: ast.Name) -> None:
         if not isinstance(node.ctx, ast.Load):

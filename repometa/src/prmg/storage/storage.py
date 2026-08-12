@@ -1,3 +1,4 @@
+import ast
 import json
 import sqlite3
 from typing import List, Sequence
@@ -310,6 +311,131 @@ class DatabaseManager:
                   )
                 """
             )
+
+            symbols = {
+                qualname: (symbol_id, symbol_type)
+                for symbol_id, qualname, symbol_type in conn.execute(
+                    "SELECT id, qualname, symbol_type FROM symbols"
+                )
+            }
+            reexport_candidates: dict[str, set[str]] = {}
+            for source_path, source_module, target, raw_reference in conn.execute(
+                """
+                SELECT ce.source_path, ce.source_symbol_qualname,
+                       target.qualname, ce.raw_reference
+                FROM consumer_edges ce
+                JOIN symbols target ON target.id = ce.target_symbol_id
+                JOIN symbols source
+                  ON source.qualname = ce.source_symbol_qualname
+                 AND source.symbol_type = 'module'
+                WHERE ce.base_edge_kind = 'import'
+                  AND ce.resolution = 'resolved'
+                """
+            ):
+                if not source_path.replace("\\", "/").endswith("/__init__.py"):
+                    continue
+                try:
+                    statement = ast.parse(raw_reference).body[0]
+                except (SyntaxError, IndexError):
+                    continue
+                if not isinstance(statement, ast.ImportFrom):
+                    continue
+                imported_name = target.rsplit(".", 1)[-1]
+                for alias in statement.names:
+                    if alias.name == imported_name:
+                        public_name = alias.asname or alias.name
+                        reexport_candidates.setdefault(
+                            f"{source_module}.{public_name}",
+                            set(),
+                        ).add(target)
+
+            reexports = {
+                alias: next(iter(targets))
+                for alias, targets in reexport_candidates.items()
+                if len(targets) == 1
+            }
+            for rowid, target in conn.execute(
+                """
+                SELECT rowid, target_qualname
+                FROM consumer_edges
+                WHERE resolution = 'unresolved'
+                """
+            ).fetchall():
+                for alias, canonical in sorted(
+                    reexports.items(),
+                    key=lambda item: len(item[0]),
+                    reverse=True,
+                ):
+                    if target != alias and not target.startswith(f"{alias}."):
+                        continue
+                    resolved_target = f"{canonical}{target[len(alias):]}"
+                    resolved_symbol = symbols.get(resolved_target)
+                    if resolved_symbol:
+                        conn.execute(
+                            """
+                            UPDATE consumer_edges
+                            SET target_qualname = ?, target_symbol_id = ?,
+                                resolution = 'resolved'
+                            WHERE rowid = ?
+                            """,
+                            (resolved_target, resolved_symbol[0], rowid),
+                        )
+                    break
+
+            bases: dict[str, list[str]] = {}
+            for source, target in conn.execute(
+                """
+                SELECT ce.source_symbol_qualname, target.qualname
+                FROM consumer_edges ce
+                JOIN symbols target ON target.id = ce.target_symbol_id
+                JOIN symbols source
+                  ON source.qualname = ce.source_symbol_qualname
+                 AND source.symbol_type = 'class'
+                WHERE ce.base_edge_kind = 'inherit'
+                  AND ce.resolution = 'resolved'
+                ORDER BY ce.source_symbol_qualname, ce.line_start, ce.col_start
+                """
+            ):
+                bases.setdefault(source, []).append(target)
+
+            for rowid, target in conn.execute(
+                """
+                SELECT rowid, target_qualname
+                FROM consumer_edges
+                WHERE resolution = 'unresolved'
+                  AND base_edge_kind IN ('call', 'reference')
+                """
+            ).fetchall():
+                owner, separator, member = target.rpartition(".")
+                if not separator or symbols.get(owner, (None, None))[1] != "class":
+                    continue
+                defining_methods: set[str] = set()
+                pending = list(bases.get(owner, []))
+                seen: set[str] = set()
+                while pending:
+                    base = pending.pop(0)
+                    if base in seen:
+                        continue
+                    seen.add(base)
+                    candidate = f"{base}.{member}"
+                    if candidate in symbols:
+                        defining_methods.add(candidate)
+                    else:
+                        pending.extend(bases.get(base, []))
+                # ponytail: ambiguous multiple-inheritance owners stay unresolved;
+                # store full MRO metadata before choosing among them.
+                if len(defining_methods) != 1:
+                    continue
+                resolved_target = defining_methods.pop()
+                conn.execute(
+                    """
+                    UPDATE consumer_edges
+                    SET target_qualname = ?, target_symbol_id = ?,
+                        resolution = 'resolved'
+                    WHERE rowid = ?
+                    """,
+                    (resolved_target, symbols[resolved_target][0], rowid),
+                )
 
     def upsert_file(self, file: File, conn: sqlite3.Connection = None) -> int:
         """

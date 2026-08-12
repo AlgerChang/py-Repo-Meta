@@ -7,7 +7,9 @@ from typing import Callable, Iterable
 from prmg.storage.models import ConsumerReference
 
 
-_RUN_DIRECTIVE = re.compile(r"^(?P<indent>\s*)(?:-\s*)?run:\s*(?P<value>.*)$")
+_COMMAND_DIRECTIVE = re.compile(
+    r"^(?P<indent>\s*)(?:-\s*)?(?:run|script|powershell):\s*(?P<value>.*)$"
+)
 _COMMAND_SEPARATOR = re.compile(r"(?:&&|;|\r?\n)")
 _PYTHON_LAUNCHERS = {"py", "py.exe", "python", "python.exe"}
 
@@ -101,7 +103,7 @@ def _iter_run_commands(text: str) -> Iterable[tuple[int, str]]:
     lines = text.splitlines()
     index = 0
     while index < len(lines):
-        match = _RUN_DIRECTIVE.match(lines[index])
+        match = _COMMAND_DIRECTIVE.match(lines[index])
         if not match:
             index += 1
             continue
@@ -110,7 +112,9 @@ def _iter_run_commands(text: str) -> Iterable[tuple[int, str]]:
         indent = len(match.group("indent"))
         value = match.group("value").strip()
         if value and value not in {"|", ">", "|-", ">-", "|+", ">+"}:
-            yield directive_line, value.strip('"\'')
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
+                value = value[1:-1]
+            yield directive_line, value
             index += 1
             continue
 
