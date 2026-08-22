@@ -14,7 +14,8 @@
 - **Local SQLite Storage**: Stores repository metadata locally in a `repometa.db` database for fast, offline querying.
 - **Extensible Plugin System**: Enrich extracted metadata with framework-specific details. (For example, a FastAPI plugin is included).
 - **Export & Formatting**: Generate `.pyi` type hints for the entire repository or focus on a single specific file.
-- **Command-Line Interface (CLI)**: An easy-to-use Typer CLI for building the database and exporting metadata.
+- **Caller & Consumer Querying**: Query direct callers (`callers`) or complete references and dependents (`consumers`) across code, tests, and CI/workflows with role and edge classification.
+- **Command-Line Interface (CLI)**: An easy-to-use Typer CLI for building the database, querying relations, and exporting metadata.
 
 ### Structure
 
@@ -39,7 +40,7 @@ poetry install
 
 #### Command-Line Interface (CLI)
 
-The CLI tool `repometa` allows you to build the metadata database and export views.
+The CLI tool `repometa` allows you to build the metadata database, query symbols, and export views.
 
 **1. Build the Database**
 
@@ -74,6 +75,34 @@ Export the metadata using PRMG engine formatters (e.g., as `.pyi` files).
   poetry run repometa export file_focus --target /path/to/your/python/project/some_module.py --repo-path /path/to/your/python/project
   ```
 
+**3. Query Metadata (Callers & Consumers)**
+
+Query relationships and dependents directly from the built metadata database in JSON format.
+
+- **Query Callers (`callers`):**
+  Find all locations that directly invoke a target function, method, class, or module. Results include the calling symbol, file path, line numbers, and edge kind (`call`, `test_call`, `smoke_call`).
+  ```bash
+  # Query callers by symbol qualname or unambiguous short name
+  poetry run repometa query callers my_package.module.my_function
+
+  # Query callers using --name or numeric --id
+  poetry run repometa query callers --name my_function
+  poetry run repometa query callers --id 42
+  ```
+
+- **Query Consumers (`consumers`):**
+  Find all references and dependents across the codebase. In addition to direct calls, it tracks imports (`import`), data/variable references (`data_dependency`), and external invocations from CI workflows or scripts (`command_dependency`). It also classifies consumer roles (`production`, `test`, `smoke`, `ci`).
+  ```bash
+  # Query all consumers for a function, class, data constant, or module
+  poetry run repometa query consumers my_package.module.my_function
+  poetry run repometa query consumers my_package.module.MY_CONSTANT
+  poetry run repometa query consumers my_package.module
+
+  # Query consumers using --name or numeric --id
+  poetry run repometa query consumers --name MY_CONSTANT
+  poetry run repometa query consumers --id 42
+  ```
+
 #### Programmatic Usage
 
 You can also use the PRMG (Python Repo Meta Graph) engine programmatically. Check `repometa/main.py` for a complete example of how to:
@@ -94,7 +123,8 @@ You can also use the PRMG (Python Repo Meta Graph) engine programmatically. Chec
 - **Local SQLite Storage**：將 repository metadata 儲存在本機的 `repometa.db` database 中，以便進行快速、離線的 querying（查詢）。
 - **Extensible Plugin System**：透過框架專屬的細節來豐富截取到的 metadata。（例如：內建 FastAPI plugin）。
 - **Export & Formatting**：為整個 repository 產生 `.pyi` type hints，或是聚焦於單一特定的檔案進行產生。
-- **Command-Line Interface (CLI)**：提供易於使用的 Typer CLI，用於建置 database 或 export metadata。
+- **Caller 與 Consumer 查詢**：精確查詢呼叫指定符號的呼叫者（`callers`），或查詢跨程式碼、測試與 CI/工作流程的引用與依賴者（`consumers`），並支援角色分類與邊類型標註。
+- **Command-Line Interface (CLI)**：提供易於使用的 Typer CLI，用於建置 database、查詢關聯與 export metadata。
 
 ### 專案結構 (Structure)
 
@@ -119,7 +149,7 @@ poetry install
 
 #### Command-Line Interface (CLI)
 
-CLI 工具 `repometa` 可以讓您建置 metadata database 並輸出指定的 view。
+CLI 工具 `repometa` 可以讓您建置 metadata database、查詢符號關聯並輸出指定的 view。
 
 **1. Build the Database (建置資料庫)**
 
@@ -151,6 +181,34 @@ include_private = false
 - **Export 特定目標檔案的 context：**
   ```bash
   poetry run repometa export file_focus --target /path/to/your/python/project/some_module.py --repo-path /path/to/your/python/project
+  ```
+
+**3. Query Metadata (查詢元資料 - Callers 與 Consumers)**
+
+直接從已建置的 metadata 資料庫中以 JSON 格式查詢符號的呼叫者與依賴關係。
+
+- **查詢呼叫者 (`callers`)：**
+  找出直接呼叫指定符號（函式、方法、類別或模組）的所有位置。回傳結果包含呼叫者符號名稱、檔案路徑、起始行號/列號，並區分呼叫情境（一般呼叫 `call`、測試呼叫 `test_call`、冒煙測試呼叫 `smoke_call`）。
+  ```bash
+  # 透過符號 qualname 或唯一名稱查詢呼叫者
+  poetry run repometa query callers my_package.module.my_function
+
+  # 使用 --name 或符號數值 --id 查詢
+  poetry run repometa query callers --name my_function
+  poetry run repometa query callers --id 42
+  ```
+
+- **查詢依賴與使用者 (`consumers`)：**
+  找出整個專案中引用或依賴目標符號的所有位置。除了函式呼叫外，亦涵蓋模組匯入（`import`）、常數/資料相依（`data_dependency`）與外部 CI/Workflow 腳本指令依賴（`command_dependency`），並自動標記消費者角色來源（`production`、`test`、`smoke`、`ci`）。
+  ```bash
+  # 查詢函式、類別、資料常數或模組的所有 Consumers
+  poetry run repometa query consumers my_package.module.my_function
+  poetry run repometa query consumers my_package.module.MY_CONSTANT
+  poetry run repometa query consumers my_package.module
+
+  # 使用 --name 或符號數值 --id 查詢
+  poetry run repometa query consumers --name MY_CONSTANT
+  poetry run repometa query consumers --id 42
   ```
 
 #### 程式化使用方式 (Programmatic Usage)
